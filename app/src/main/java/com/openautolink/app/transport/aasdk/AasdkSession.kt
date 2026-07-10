@@ -12,6 +12,7 @@ import com.openautolink.app.transport.usb.UsbConnectionManager
 import com.openautolink.app.video.VideoFrame
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -97,7 +98,16 @@ class AasdkSession(
     var lastVideoFrameMs: Long = 0L
         private set
 
-    private val _videoFrames = MutableSharedFlow<VideoFrame>(extraBufferCapacity = 30)
+    // REL-16: DROP_OLDEST so a briefly-stalled collector (e.g. during a codec
+    // reconfigure) drops STALE frames and keeps the NEWEST — including any recent
+    // IDR needed to recover. The default behaviour dropped the *newest* frame via
+    // a failed tryEmit and kept stale ones, so a fresh keyframe could be discarded,
+    // stranding the decoder in its awaiting-fresh-IDR freeze. Video is disposable;
+    // the latest frame always wins.
+    private val _videoFrames = MutableSharedFlow<VideoFrame>(
+        extraBufferCapacity = 30,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
     val videoFrames: SharedFlow<VideoFrame> = _videoFrames.asSharedFlow()
 
     /** Negotiated video codec type from phone. 3=H.264, 5=H.264_BP, 7=H.265 */
