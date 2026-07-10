@@ -79,34 +79,45 @@ class HfpPresenceServer(
             return
         }
 
+        var consecutiveFailures = 0
         while (running && scope.isActive) {
             var threw = false
             val client: BluetoothSocket? = try {
                 serverSocket?.accept()
             } catch (e: Exception) {
-                if (running) OalLog.w(TAG, "HFP accept() failed: ${e.message}")
+                // Log only the first failure; the loop abandons the socket after a
+                // few tries rather than spamming 'accept() failed' once/sec.
+                if (running && consecutiveFailures == 0) OalLog.w(TAG, "HFP accept() failed: ${e.message}")
                 threw = true
                 null
             }
             if (client != null) {
+                consecutiveFailures = 0
                 val remote = try { client.remoteDevice?.address ?: "?" } catch (_: Throwable) { "?" }
                 OalLog.i(TAG, "HFP presence connection from $remote — closing (presence-only)")
                 try { client.close() } catch (_: Throwable) {}
                 continue
             }
-            // accept() returned null or threw. If serverSocket is gone we
-            // can't recover — bail out. Otherwise back off so a torn-down
-            // socket (BT adapter cycling on car shutdown) doesn't pin a
-            // thread at 100% CPU spamming 'accept() failed' lines. Without
-            // this guard, shutdown saw ~5000 such lines/sec.
             if (serverSocket == null) {
                 if (running) OalLog.w(TAG, "HFP server socket closed — exiting accept loop")
                 break
             }
             if (threw) {
+                consecutiveFailures++
+                // Some AAOS BT stacks won't keep an app RFCOMM server socket alive,
+                // so accept() fails immediately and forever. Abandon after a few
+                // tries instead of retrying a dead socket once/sec and flooding the
+                // log — this is a best-effort presence hint, not required for AA.
+                if (consecutiveFailures >= 5) {
+                    OalLog.w(TAG, "HFP accept() failed ${consecutiveFailures}x — abandoning presence advertisement (best-effort only, harmless)")
+                    break
+                }
                 try { kotlinx.coroutines.delay(1000) } catch (_: Throwable) { break }
             }
         }
+        try { serverSocket?.close() } catch (_: Throwable) {}
+        serverSocket = null
+        running = false
     }
 
     fun stop() {
