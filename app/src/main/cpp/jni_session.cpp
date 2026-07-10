@@ -629,7 +629,11 @@ void JniSession::onByeByeResponse(
     const aap_protobuf::service::control::message::ByeByeResponse& /*response*/)
 {
     LOGI("ByeBye response received");
-    stop();
+    // NAT-1: this callback runs ON ioThread_, and stop() joins ioThread_ — a
+    // direct call self-joins (EDEADLK), throws, and std::terminate()s the process.
+    // Detach onto a worker, matching onByeByeRequest and the VIDEO_FOCUS_NATIVE path.
+    auto self = shared_from_this();
+    std::thread([self] { self->stop(); }).detach();
 }
 
 void JniSession::onBatteryStatusNotification(
