@@ -67,10 +67,13 @@ class AaProxy(
 
     /** Start the proxy server. Returns the localhost port AA should connect to. */
     fun start(): Int {
-        // SEC-5: bind to loopback only. Android Auto connects from 127.0.0.1
-        // (fireAaLaunchIntent points AA at localhost); ServerSocket(0) bound the
-        // wildcard address, exposing this bridge port to the whole LAN.
-        val server = ServerSocket(0, 50, java.net.InetAddress.getLoopbackAddress())
+        // SEC-5: bind to the IPv4 loopback only. fireAaLaunchIntent hands AA the
+        // literal "127.0.0.1", so we must bind that exact address — using
+        // InetAddress.getLoopbackAddress() can resolve to the IPv6 loopback (::1)
+        // on dual-stack devices, which then refuses AA's IPv4 connect and makes
+        // projection fail to start. Still loopback-only (never reachable off-device),
+        // so the LAN-exposure fix holds.
+        val server = ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
         serverSocket = server
         isRunning = true
 
