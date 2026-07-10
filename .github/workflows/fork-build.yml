@@ -99,13 +99,18 @@ jobs:
             --no-daemon
 
       - name: Build companion APK
+        env:
+          UPLOAD_KEY_ALIAS: upload
+          UPLOAD_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
+          UPLOAD_STORE_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
         run: |
           ./gradlew :companion:assembleRelease --no-daemon
 
       - name: Get version
         id: version
         run: |
-          VERSION=$(grep 'versionName' secrets/version.properties | cut -d= -f2)
+          VERSION=$(grep 'versionName' secrets/version.properties 2>/dev/null | cut -d= -f2 || true)
+          VERSION="${VERSION:-0.1.0}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Create release
