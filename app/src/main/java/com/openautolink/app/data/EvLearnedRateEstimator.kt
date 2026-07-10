@@ -53,7 +53,7 @@ class EvLearnedRateEstimator private constructor(
         private const val MIN_USABLE_KM = 1.0f
         private const val MIN_INST_WH_PER_KM = 50f   // < this is implausible
         private const val MAX_INST_WH_PER_KM = 800f  // > this too
-        private const val MIN_SAMPLE_KM_PER_TICK = 0.05f
+        private const val MIN_SAMPLE_KM_PER_WINDOW = 0.05f
         // Restart the sample window if more than this elapses (e.g. car was
         // off, app was backgrounded, etc.). Prevents stale lastBatteryWh from
         // creating a giant Δ when the car turns back on.
@@ -84,61 +84,89 @@ class EvLearnedRateEstimator private constructor(
             val speedKmh = vd.speedKmh ?: 0f
             val charging = (vd.evChargeRateW ?: 0f) > 0f
 
-            val prevElapsed = s.lastTickElapsedMs
-            val prevBattery = s.lastBatteryWh
-
-            // Always track the latest reading so the next tick can compute Δ.
+            // REL-2: two separate clocks.
+            //  * lastTickElapsedMs marks the PREVIOUS tick and is advanced every
+            //    tick — it drives per-tick distance/energy increments and gap
+            //    detection (ticks that stopped arriving = car off / backgrounded).
+            //  * the accumulation window (windowStartBatteryWh / windowAccumKm /
+            //    windowAccumWhGt) resets ONLY when a sample is taken or the window
+            //    is deliberately restarted (charging / gap / init).
+            // Previously the window baseline was advanced every tick before the
+            // distance gate, so at the real ~500 ms tick cadence dKm never reached
+            // MIN_SAMPLE_KM_PER_WINDOW and no sample was ever accepted.
+            val prevTickElapsed = s.lastTickElapsedMs
             s.lastTickElapsedMs = nowElapsedMs
-            s.lastBatteryWh = batteryWh
 
-            if (charging) return "skip:charging"
-            if (prevElapsed == 0L || prevBattery <= 0) return "init"
-
-            val dtMs = nowElapsedMs - prevElapsed
-            if (dtMs <= 0 || dtMs > MAX_TICK_GAP_MS) return "skip:gap=${dtMs}ms"
-
-            val dtH = dtMs / 3_600_000f
-            val dKm = speedKmh * dtH
-            if (dKm < MIN_SAMPLE_KM_PER_TICK) return "skip:dKm<$MIN_SAMPLE_KM_PER_TICK"
-
-            // Energy delta — prefer motor-power × dt when HistoryProvider is
-            // serving samples (Finding F.2: more responsive, less SOC-quantization
-            // noise than batteryWh delta). Falls back to batteryWh delta when
-            // the provider is patched / unavailable / returns null.
-            val motorW = vd.evMotorPowerW
-            val (dWh, source) = if (motorW != null && motorW > 0f) {
-                (motorW * dtH) to "gt"   // ground-truth integration
-            } else {
-                ((prevBattery - batteryWh).toFloat()) to "bd"   // battery delta
+            fun startWindow(reason: String): String {
+                s.windowStartBatteryWh = batteryWh
+                s.windowAccumKm = 0f
+                s.windowAccumWhGt = 0f
+                return reason
             }
-            if (dWh <= 0f) return "skip:regen(dWh=${dWh.toInt()})"
+
+            if (charging) return startWindow("skip:charging")
+            if (prevTickElapsed == 0L || s.windowStartBatteryWh <= 0) return startWindow("init")
+
+            val interTickMs = nowElapsedMs - prevTickElapsed
+            if (interTickMs <= 0 || interTickMs > MAX_TICK_GAP_MS)
+                return startWindow("skip:gap=${interTickMs}ms")
+
+            // Integrate this tick's distance (and ground-truth motor energy, when
+            // available) into the window. Distance MUST be integrated per tick —
+            // current speed × the whole-window duration would be wrong for a
+            // varying speed.
+            val interTickH = interTickMs / 3_600_000f
+            s.windowAccumKm += speedKmh * interTickH
+            val motorW = vd.evMotorPowerW
+            if (motorW != null && motorW > 0f) s.windowAccumWhGt += motorW * interTickH
+
+            val dKm = s.windowAccumKm
+            // Not enough distance yet — keep accumulating (do NOT reset the window).
+            if (dKm < MIN_SAMPLE_KM_PER_WINDOW) return "skip:accumKm=$dKm"
+
+            // Enough distance — take a sample. Prefer integrated motor power
+            // (Finding F.2: less SOC-quantization noise); else the battery drop
+            // across the whole window (quantization averages out over the larger
+            // accumulated delta).
+            val (dWh, source) = if (s.windowAccumWhGt > 0f) {
+                s.windowAccumWhGt to "gt"
+            } else {
+                (s.windowStartBatteryWh - batteryWh).toFloat() to "bd"
+            }
+            if (dWh <= 0f) return startWindow("skip:regen(dWh=${dWh.toInt()})")
 
             val instWhPerKm = dWh / dKm
             if (instWhPerKm < MIN_INST_WH_PER_KM || instWhPerKm > MAX_INST_WH_PER_KM) {
-                return "skip:outlier(${instWhPerKm.toInt()},src=$source)"
+                return startWindow("skip:outlier(${instWhPerKm.toInt()},src=$source)")
             }
 
             // EMA — alpha scales with sample distance so a long stretch counts more
-            // than a 50 m blip.
+            // than a short one.
             val alpha = (dKm / 5f).coerceIn(0.01f, 0.3f)
             s.whPerKm = if (s.whPerKm <= 0f) instWhPerKm
                         else (1f - alpha) * s.whPerKm + alpha * instWhPerKm
             s.sampleKm += dKm
             s.lastUpdateMs = System.currentTimeMillis()
-
+            startWindow("")  // sample taken — begin a fresh window from here
             return "ok:$source inst=${instWhPerKm.toInt()} ema=${s.whPerKm.toInt()}"
         }
     }
 
-    /** Mutable per-vehicle state. Protected by the [stateLock] for write
-     *  ordering; individual fields are also `@Volatile` so the UI snapshot
-     *  reader sees consistent-enough values without taking the lock. */
+    /** Mutable per-vehicle state. Fields are `@Volatile`; a given vehicle's
+     *  ticks arrive serially from the forwarder, so [applyTick] needs no lock
+     *  and the UI snapshot reader sees consistent-enough values. */
     internal class VehicleState {
         @Volatile var whPerKm: Float = 0f          // 0 = no data yet
         @Volatile var sampleKm: Float = 0f
         @Volatile var lastUpdateMs: Long = 0L
-        @Volatile var lastBatteryWh: Int = 0       // last absolute battery (Wh)
-        @Volatile var lastTickElapsedMs: Long = 0L // SystemClock.elapsedRealtime
+        // Previous tick's SystemClock.elapsedRealtime — advanced every tick;
+        // drives per-tick distance/energy increments and gap detection.
+        @Volatile var lastTickElapsedMs: Long = 0L
+        // Accumulation window (runtime-only, not persisted). Resets only when a
+        // sample is taken or the window is restarted (charging / gap / init).
+        @Volatile var windowStartBatteryWh: Int = 0  // battery (Wh) at window start
+        @Volatile var windowAccumKm: Float = 0f      // Σ speed·Δt since window start
+        @Volatile var windowAccumWhGt: Float = 0f    // Σ motorPower·Δt (ground truth)
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

@@ -96,7 +96,7 @@ class EvLearnedRateEstimatorTest {
             speedKmh = 0f,
             nowMs = 1_000 + 60_000,
         )
-        assertTrue("expected stationary-skip, got '$status'", status.startsWith("skip:dKm"))
+        assertTrue("expected stationary-skip, got '$status'", status.startsWith("skip:accumKm"))
         assertEquals(0f, s2.whPerKm, 0.001f)
     }
 
@@ -133,7 +133,7 @@ class EvLearnedRateEstimatorTest {
         var s = EvLearnedRateEstimator.VehicleState()
         var battery = 80_000
         var nowMs = 1_000L
-        s.lastBatteryWh = battery
+        s.windowStartBatteryWh = battery
         s.lastTickElapsedMs = nowMs
 
         // Repeatedly consume at 200 Wh/km for 5 km each tick (5 minutes at 60 km/h).
@@ -158,6 +158,37 @@ class EvLearnedRateEstimatorTest {
             sampleKm = s.sampleKm,
         )
         assertTrue("expected usable snapshot", snap.usable)
+    }
+
+    @Test
+    fun accumulatesAcrossFastSubThresholdTicks() {
+        // REL-2 regression test. Production feeds ticks ~every 500 ms. At 90 km/h
+        // a single 500 ms tick covers only ~0.0125 km — below the 0.05 km window
+        // threshold — so the pre-REL-2 code (which advanced the baseline every
+        // tick before the gate) discarded every tick and never learned. The
+        // window must now accrue distance across ticks until a sample is accepted.
+        val s = EvLearnedRateEstimator.VehicleState()
+        val startBattery = 60_000
+        val whPerKmTarget = 180f
+        val speed = 90f
+        var nowMs = 0L
+        var cumulativeKm = 0f
+        var sawOk = false
+        repeat(80) {
+            val prevMs = nowMs
+            nowMs += 500
+            if (prevMs > 0L) cumulativeKm += speed * (500f / 3_600_000f)
+            val battery = (startBattery - cumulativeKm * whPerKmTarget).toInt()
+            val vd = ControlMessage.VehicleData(
+                evBatteryLevelWh = battery.toFloat(),
+                speedKmh = speed,
+                carMake = "T", carModel = "M", carYear = "2024",
+            )
+            val status = EvLearnedRateEstimator.applyTick(s, vd, nowMs)
+            if (status.startsWith("ok:")) sawOk = true
+        }
+        assertTrue("expected accepted sample(s) at 500 ms cadence", sawOk)
+        assertTrue("expected learned rate near target, got ${s.whPerKm}", s.whPerKm in 120f..260f)
     }
 
     @Test
