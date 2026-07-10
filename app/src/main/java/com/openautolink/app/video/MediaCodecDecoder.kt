@@ -557,7 +557,18 @@ class MediaCodecDecoder(
         }
     }
 
-    private fun configureCodec(configData: ByteArray) {
+    // REL-3: serialize the entire configure against itself and releaseCodec.
+    // attach() (UI thread) and handleCodecConfig() (IO thread) could otherwise
+    // both run createByCodecName/configure/start concurrently on the same Surface
+    // — the second configure fails ("already connected to another API") and a
+    // MediaCodec plus its drain thread leak. codecReleaseLock is reentrant with the
+    // releaseCodec()/queueFrame() that also take it, and the drain thread never
+    // holds it, so there is no deadlock.
+    private fun configureCodec(configData: ByteArray) = synchronized(codecReleaseLock) {
+        configureCodecLocked(configData)
+    }
+
+    private fun configureCodecLocked(configData: ByteArray) {
         releaseCodec()
         _decoderState.value = DecoderState.CONFIGURING
 
