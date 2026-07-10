@@ -54,9 +54,9 @@ class EvLearnedRateEstimator private constructor(
         private const val MIN_INST_WH_PER_KM = 50f   // < this is implausible
         private const val MAX_INST_WH_PER_KM = 800f  // > this too
         private const val MIN_SAMPLE_KM_PER_WINDOW = 0.05f
-        // Restart the sample window if more than this elapses (e.g. car was
-        // off, app was backgrounded, etc.). Prevents stale lastBatteryWh from
-        // creating a giant Δ when the car turns back on.
+        // Restart the accumulation window if more than this elapses between ticks
+        // (e.g. car was off, app was backgrounded). Prevents a stale window
+        // baseline from creating a giant Δ when the car turns back on.
         private const val MAX_TICK_GAP_MS = 15 * 60 * 1000L
         // Throttle DataStore writes so we don't thrash on every sub-second tick.
         private const val PERSIST_DEBOUNCE_MS = 5_000L
@@ -101,6 +101,7 @@ class EvLearnedRateEstimator private constructor(
                 s.windowStartBatteryWh = batteryWh
                 s.windowAccumKm = 0f
                 s.windowAccumWhGt = 0f
+                s.windowAccumGtKm = 0f
                 return reason
             }
 
@@ -116,9 +117,13 @@ class EvLearnedRateEstimator private constructor(
             // current speed × the whole-window duration would be wrong for a
             // varying speed.
             val interTickH = interTickMs / 3_600_000f
-            s.windowAccumKm += speedKmh * interTickH
+            val dIncrKm = speedKmh * interTickH
+            s.windowAccumKm += dIncrKm
             val motorW = vd.evMotorPowerW
-            if (motorW != null && motorW > 0f) s.windowAccumWhGt += motorW * interTickH
+            if (motorW != null && motorW > 0f) {
+                s.windowAccumWhGt += motorW * interTickH
+                s.windowAccumGtKm += dIncrKm
+            }
 
             val dKm = s.windowAccumKm
             // Not enough distance yet — keep accumulating (do NOT reset the window).
@@ -128,7 +133,13 @@ class EvLearnedRateEstimator private constructor(
             // (Finding F.2: less SOC-quantization noise); else the battery drop
             // across the whole window (quantization averages out over the larger
             // accumulated delta).
-            val (dWh, source) = if (s.windowAccumWhGt > 0f) {
+            // Prefer integrated motor power only when it covered (essentially) the
+            // whole window — a window mixing gt and no-gt ticks would divide partial
+            // gt energy by the full-window distance and bias the rate. Otherwise use
+            // the battery drop over the window (SOC quantization averages out at this
+            // window size).
+            val gtCoversWindow = s.windowAccumWhGt > 0f && s.windowAccumGtKm >= dKm - 1e-3f
+            val (dWh, source) = if (gtCoversWindow) {
                 s.windowAccumWhGt to "gt"
             } else {
                 (s.windowStartBatteryWh - batteryWh).toFloat() to "bd"
@@ -167,6 +178,7 @@ class EvLearnedRateEstimator private constructor(
         @Volatile var windowStartBatteryWh: Int = 0  // battery (Wh) at window start
         @Volatile var windowAccumKm: Float = 0f      // Σ speed·Δt since window start
         @Volatile var windowAccumWhGt: Float = 0f    // Σ motorPower·Δt (ground truth)
+        @Volatile var windowAccumGtKm: Float = 0f    // distance covered by gt ticks
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
