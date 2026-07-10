@@ -96,6 +96,7 @@ jobs:
           chmod +x gradlew
           ./gradlew :app:bundleRelease \
             -PappId="${{ secrets.APP_ID }}" \
+            -PoalVersionCode=${{ github.run_number }} \
             --no-daemon
 
       - name: Build companion APK
