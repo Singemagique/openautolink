@@ -28,8 +28,6 @@ You are a code-review specialist for the OpenAutoLink project. You validate chan
    | Instruction file | Load when changes touch… |
    |---|---|
    | `app-kotlin.instructions.md` | `app/**/*.kt` |
-   | `bridge-cpp.instructions.md` | `bridge/openautolink/headless/**` |
-   | `bridge-dev-workflow.instructions.md` | `bridge/**`, `scripts/deploy-bridge.ps1`, `scripts/build-bridge-wsl.sh` |
    | `audio-pipeline.instructions.md` | audio-related files (AudioTrack, mic, ring buffer) |
    | `video-pipeline.instructions.md` | video-related files (MediaCodec, Surface, codec) |
    | `ui-requirements.instructions.md` | `app/**/ui/**` |

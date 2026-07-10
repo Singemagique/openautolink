@@ -67,7 +67,10 @@ class AaProxy(
 
     /** Start the proxy server. Returns the localhost port AA should connect to. */
     fun start(): Int {
-        val server = ServerSocket(0)
+        // SEC-5: bind to loopback only. Android Auto connects from 127.0.0.1
+        // (fireAaLaunchIntent points AA at localhost); ServerSocket(0) bound the
+        // wildcard address, exposing this bridge port to the whole LAN.
+        val server = ServerSocket(0, 50, java.net.InetAddress.getLoopbackAddress())
         serverSocket = server
         isRunning = true
 

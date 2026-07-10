@@ -17,6 +17,10 @@ android {
         versionCode = (findProperty("oalVersionCode") as? String)?.toIntOrNull() ?: 1
         versionName = (findProperty("oalVersionName") as? String) ?: "0.1.0"
 
+        // SEC-3: the ADB settings/reconnect BroadcastReceiver is disabled by
+        // default (release) and re-enabled only in debug builds below.
+        manifestPlaceholders["debugReceiverEnabled"] = "false"
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
@@ -46,6 +50,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            // SEC-3: re-enable the ADB settings/reconnect receiver for local
+            // development only. It stays disabled in release (default above).
+            manifestPlaceholders["debugReceiverEnabled"] = "true"
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true

@@ -310,6 +310,16 @@ Validated on a **2024 Chevrolet Blazer EV** running AAOS 12L. Other GM EVs on si
 
 The companion app runs on any Android phone over WiFi. The car app and the phone need to be on the same network — either the car's hotspot or the phone's hotspot.
 
+## Security Model
+
+OpenAutoLink's trust boundary is the **local WiFi network** shared by the car and the phone. It is designed for owner-operated use — a car and phones owned or trusted by the same person or household.
+
+- **Your WiFi password is the authentication.** In Car Hotspot mode the link is only as private as the car's WPA2 hotspot. Any device you give the hotspot password to can be discovered and can connect, so only share it with people you trust. The apps do **not** add a separate pairing secret on top of the WiFi layer: the Android Auto session is encrypted (aasdk SSL), but the phone is identified by an advertised device id rather than authenticated cryptographically. A hostile device that already has your hotspot password is out of scope for this threat model.
+- **Credentials stay on the phone.** The car WiFi password you enter in the Companion app is kept in the app's private storage and is **excluded from cloud backup and device transfer** — it is never sent to any server.
+- **Head-unit debug controls are release-gated.** The ADB settings/reconnect receiver on the car app is disabled in release builds, so another app on the head unit cannot rewrite settings or redirect the projection session.
+
+If your threat model includes untrusted devices on the same network, treat the hotspot password as the shared secret it is, and prefer a hotspot only your own devices know.
+
 ## Acknowledgments
 
 ### Core Dependency

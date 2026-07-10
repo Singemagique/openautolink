@@ -112,12 +112,7 @@ scripts/build-aasdk-android.sh     # aasdk + protobuf + abseil static libs
 ```
 These produce prebuilt `.a` files in `app/src/main/cpp/third_party/`. Gradle's NDK build links them — no source compilation in Gradle.
 
-### Bridge (WSL cross-compile + deploy) — bridge-mode branch only
-```powershell
-scripts\deploy-bridge.ps1          # Build in WSL + deploy to SBC
-scripts\deploy-bridge.ps1 -Clean    # Clean rebuild + deploy
-```
-See [bridge/sbc/BUILD.md](bridge/sbc/BUILD.md) for SBC setup. CI builds via `.github/workflows/release-bridge.yml`.
+> The legacy SBC bridge (WSL cross-compile + deploy) lives only on the `bridge-mode` branch; it was removed from `main`.
 
 ## Conventions
 
@@ -165,12 +160,9 @@ See [bridge/sbc/BUILD.md](bridge/sbc/BUILD.md) for SBC setup. CI builds via `.gi
 | [docs/protocol.md](docs/protocol.md) | OAL wire protocol specification (bridge-mode only) |
 | [docs/embedded-knowledge.md](docs/embedded-knowledge.md) | Hardware lessons (MUST READ before touching video/audio/VHAL) |
 | [docs/networking.md](docs/networking.md) | Three-network architecture (bridge-mode only) |
-| [bridge/sbc/BUILD.md](bridge/sbc/BUILD.md) | SBC build and deployment guide (bridge-mode only) |
-| [docs/bridge-update.md](docs/bridge-update.md) | Bridge OTA update system — as-built design, flow, security |
 | [docs/testing.md](docs/testing.md) | Local testing with AAOS emulator + SBC + remote diagnostics |
 ## Pitfalls
 
-- **CRLF**: Shell scripts must be LF (enforced via `.gitattributes eol=lf`). Windows `scp` from PowerShell injects CRLF. **`sed`, `tr`, and `perl` over SSH from PowerShell cannot fix this** — PowerShell re-injects `\r` into escape sequences. Use the Python binary-I/O method in [bridge/sbc/BUILD.md](bridge/sbc/BUILD.md#manually-copying-files-from-windows). The `deploy-bridge.ps1` script handles this automatically.
 - **aasdk v1.6**: Phone requires v1.6 ServiceConfiguration format. v1.1 format = silent ignore
 - **BlueZ SAP plugin** (bridge-mode only): Steals RFCOMM channel 8. Disable with `--noplugin=sap`
 - **MediaCodec lifecycle**: Must release codec on pause, recreate on resume. Surface changes require full codec reset

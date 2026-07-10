@@ -146,9 +146,15 @@
             android:name="com.android.automotive.application.DISTRACTION_OPTIMIZED"
             android:value="true" />
 
-        <!-- Debug: change settings via ADB broadcast without rebuild -->
+        <!-- Debug: change settings via ADB broadcast without rebuild.
+             SECURITY (SEC-3): gated to debug builds via the ${debugReceiverEnabled}
+             manifest placeholder (false in release, true in debug — see
+             app/build.gradle.kts). Disabled in release so a local app on the
+             head unit cannot rewrite prefs (e.g. manual_ip_address) or force a
+             RECONNECT to redirect the AA session. Kept exported for adb in debug. -->
         <receiver
             android:name=".diagnostics.SettingsReceiver"
+            android:enabled="${debugReceiverEnabled}"
             android:exported="true">
             <intent-filter>
                 <action android:name="com.openautolink.app.SET_PREF" />

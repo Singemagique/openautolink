@@ -41,5 +41,4 @@ scripts/linux/bundle-release.sh
 |---|---|---|
 | Signing credential storage | DPAPI-encrypted XML | env vars (or `secrets/signing.env` sourced manually) |
 | Default JDK | Eclipse Adoptium under `Program Files` | distro `java-21-openjdk` etc. |
-| Deploy to SBC | `deploy-bridge.ps1` (handles CRLF stripping) | not needed — Linux ships LF natively |
 | Screenshot/log helpers | included | not ported (rarely useful from Linux dev box) |

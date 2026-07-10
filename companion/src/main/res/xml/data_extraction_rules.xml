@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- SEC-4: the car WiFi password and maintainer log-upload token live in
+     OalCompanionPrefs.xml. Exclude it from cloud backup and device transfer so
+     the credential never leaves the phone. (Backup is also disabled outright via
+     android:allowBackup="false"; these excludes are belt-and-suspenders and keep
+     the credential out even if backup is re-enabled later.) -->
 <data-extraction-rules>
     <cloud-backup>
-        <include domain="sharedpref" path="OalCompanionPrefs.xml" />
+        <exclude domain="sharedpref" path="OalCompanionPrefs.xml" />
     </cloud-backup>
     <device-transfer>
-        <include domain="sharedpref" path="OalCompanionPrefs.xml" />
+        <exclude domain="sharedpref" path="OalCompanionPrefs.xml" />
     </device-transfer>
 </data-extraction-rules>

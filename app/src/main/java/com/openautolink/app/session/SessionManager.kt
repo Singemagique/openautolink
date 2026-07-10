@@ -1558,15 +1558,19 @@ class SessionManager(
     //     --el duration_ms 60000 \
     //     com.openautolink.app
     //
-    // Exposed for integration tests. Action is namespaced under our package
-    // and the receiver is package-internal (RECEIVER_NOT_EXPORTED on T+); on
-    // older platforms it's still package-scoped at the dispatch layer because
-    // we pass the package in the broadcast intent.
+    // Exposed for integration tests and adb-driven debugging. Registered
+    // EXPORTED on T+ (below) so `adb shell am broadcast` — which runs as the
+    // shell uid — can reach it. That also means any app on the head unit could,
+    // so registration is gated to debug builds and is never present in release.
     // ------------------------------------------------------------------
     private var debugSleepReceiver: android.content.BroadcastReceiver? = null
     private fun registerDebugReceiver() {
         if (debugSleepReceiver != null) return
         val ctx = context ?: return
+        // SEC-3: debug builds only — this receiver is EXPORTED (for adb) and
+        // handles DEBUG_INJECT_PHONE, which would let a local app on the head
+        // unit redirect the session to an arbitrary host:port. Never in release.
+        if ((ctx.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) return
         val r = object : android.content.BroadcastReceiver() {
             override fun onReceive(c: android.content.Context?, intent: android.content.Intent?) {
                 when (intent?.action) {

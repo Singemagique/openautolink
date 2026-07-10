@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- SEC-4: exclude the credential-bearing prefs from legacy (API <= 30) full
+     backup. See data_extraction_rules.xml for the modern equivalent. -->
 <full-backup-content>
-    <include domain="sharedpref" path="OalCompanionPrefs.xml" />
+    <exclude domain="sharedpref" path="OalCompanionPrefs.xml" />
 </full-backup-content>
