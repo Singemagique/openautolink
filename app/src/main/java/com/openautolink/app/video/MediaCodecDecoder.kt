@@ -152,8 +152,12 @@ class MediaCodecDecoder(
     // Instead, drop all P-frames until a fresh real IDR arrives from the
     // phone, showing a frozen-but-clean cached frame in the meantime.
     @Volatile private var awaitingFreshIdr = false
-    // Wall-clock (elapsedRealtime) when awaitingFreshIdr was last raised, so
-    // handleRegularFrame can cap the P-frame-drop window (issue #35). 0 = not set.
+    // Monotonic time (SystemClock.elapsedRealtime) when awaitingFreshIdr was last
+    // raised, so handleRegularFrame can cap the P-frame-drop window (issue #35).
+    // REL-17: must be elapsedRealtime, not wall-clock — AAOS sets its RTC from
+    // GNSS/network around connect time, and a jump would make the 3 s cap never
+    // fire, freezing the picture until the phone's next natural keyframe (~2 min).
+    // 0 = not set.
     @Volatile private var awaitingFreshIdrSinceMs = 0L
     // Skip first few frames after codec init to avoid green hue from resolution
     // transition. When codec is configured at 1920x1080 but video is 2560x1440,
@@ -190,7 +194,7 @@ class MediaCodecDecoder(
                     // arrives — shows a frozen-but-clean cached frame
                     // instead of progressively-corrupting blocky garbage.
                     awaitingFreshIdr = true
-                    awaitingFreshIdrSinceMs = System.currentTimeMillis()
+                    awaitingFreshIdrSinceMs = android.os.SystemClock.elapsedRealtime()
                     _needsKeyframe = false
                     _needsKeyframeFlow.value = true
                 } else {
@@ -399,7 +403,7 @@ class MediaCodecDecoder(
             queueFrame(frame)  // Feed to decoder — establishes reference for P-frames
             receivedIdr = true  // Allow P-frames to flow to decoder
             renderingEnabled = false  // Don't show green seed output
-            seedIdrTimeMs = System.currentTimeMillis()  // Start warmup timer
+            seedIdrTimeMs = android.os.SystemClock.elapsedRealtime()  // Start warmup timer
             // Don't cache the seed IDR — if surface is recreated, we don't want
             // to replay a green frame. Better to wait for a real one.
             // Keep requesting a real IDR — the phone may eventually respond
@@ -460,7 +464,7 @@ class MediaCodecDecoder(
             // waiting and feed P-frames anyway — accept a few hundred ms of
             // blockiness as the reference chain rebuilds over a multi-minute freeze.
             val heldMs = if (awaitingFreshIdrSinceMs > 0)
-                System.currentTimeMillis() - awaitingFreshIdrSinceMs else 0L
+                android.os.SystemClock.elapsedRealtime() - awaitingFreshIdrSinceMs else 0L
             if (heldMs >= AWAITING_FRESH_IDR_CAP_MS) {
                 Log.w(TAG, "awaitingFreshIdr held ${heldMs}ms (cap ${AWAITING_FRESH_IDR_CAP_MS}ms) — no fresh IDR arrived, feeding P-frames anyway")
                 DiagnosticLog.w("video", "Fresh-IDR wait capped at ${heldMs}ms — resuming P-frames (expect brief blockiness)")
@@ -484,7 +488,7 @@ class MediaCodecDecoder(
         // dequeued and released without rendering, keeping the decoder pipeline
         // active so picture content accumulates in the reference buffers.
         if (!renderingEnabled && seedIdrTimeMs > 0) {
-            val elapsed = System.currentTimeMillis() - seedIdrTimeMs
+            val elapsed = android.os.SystemClock.elapsedRealtime() - seedIdrTimeMs
             if (elapsed >= SEED_WARMUP_MS) {
                 Log.i(TAG, "Seed warmup complete (${elapsed}ms) — enabling render")
                 DiagnosticLog.i("video", "Seed warmup done (${elapsed}ms), render enabled")
