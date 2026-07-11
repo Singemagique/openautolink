@@ -272,9 +272,15 @@ class UsbConnectionManager(
         } else {
             _connectionState.value = UsbConnectionState.PERMISSION_REQUESTED
             _status.value = "Requesting USB permission..."
+            // The USB-permission PendingIntent must be mutable (the system adds
+            // EXTRA_PERMISSION_GRANTED / EXTRA_DEVICE when it fires). But on
+            // Android 14+ a *mutable* PendingIntent with an *implicit* intent
+            // throws IllegalArgumentException — which force-closed the app the
+            // instant a USB device was selected. Make the intent explicit (our own
+            // package) so it's mutable+explicit, which is allowed on all versions.
             val permissionIntent = PendingIntent.getBroadcast(
                 context, 0,
-                Intent(ACTION_USB_PERMISSION),
+                Intent(ACTION_USB_PERMISSION).setPackage(context.packageName),
                 PendingIntent.FLAG_MUTABLE
             )
             usbManager.requestPermission(device, permissionIntent)
