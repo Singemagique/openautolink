@@ -19,6 +19,9 @@
 namespace openautolink::jni {
 
 static constexpr size_t kReadBufferSize = 16384;
+// NAT-8: only reclaim the consumed prefix once this many bytes have been read,
+// so draining is amortized O(1) instead of an O(n) front-erase on every receive.
+static constexpr size_t kReceiveCompactThreshold = 256 * 1024;
 
 JniTransport::JniTransport(boost::asio::io_service& ioService, JavaVM* jvm, jobject javaTransport)
     : ioService_(ioService)
@@ -85,10 +88,15 @@ void JniTransport::receive(size_t size, ReceivePromise::Pointer promise)
         {
             std::lock_guard<std::mutex> lock(receiveMutex_);
 
-            // If we already have enough buffered data, resolve immediately
-            if (receiveBuffer_.size() >= size) {
-                resolveData.assign(receiveBuffer_.begin(), receiveBuffer_.begin() + size);
-                receiveBuffer_.erase(receiveBuffer_.begin(), receiveBuffer_.begin() + size);
+            // If we already have enough buffered data, resolve immediately.
+            // NAT-8: consume via a read offset (O(1)) instead of erase-from-front
+            // (O(n)) — a growing buffer plus a per-read memmove compounded into a
+            // throughput collapse over minutes.
+            if (receiveBuffer_.size() - receiveReadPos_ >= size) {
+                auto first = receiveBuffer_.begin() + receiveReadPos_;
+                resolveData.assign(first, first + size);
+                receiveReadPos_ += size;
+                compactReceiveBuffer();
                 canResolve = true;
             } else {
                 // Queue the promise for later fulfillment
@@ -251,6 +259,23 @@ void JniTransport::readThreadFunc()
     });
 }
 
+void JniTransport::compactReceiveBuffer()
+{
+    // Called with receiveMutex_ held. Reclaim consumed bytes: clear cheaply when
+    // the buffer is fully drained (the common case when consumption keeps up), and
+    // only memmove the tail once the dead prefix passes the threshold. Makes
+    // draining amortized O(1) instead of the O(n)-per-read front-erase that
+    // compounded into a throughput collapse as the buffer grew (NAT-8).
+    if (receiveReadPos_ == receiveBuffer_.size()) {
+        receiveBuffer_.clear();
+        receiveReadPos_ = 0;
+    } else if (receiveReadPos_ >= kReceiveCompactThreshold) {
+        receiveBuffer_.erase(receiveBuffer_.begin(),
+                             receiveBuffer_.begin() + receiveReadPos_);
+        receiveReadPos_ = 0;
+    }
+}
+
 void JniTransport::processReceiveQueue()
 {
     strand_.dispatch([this]() {
@@ -263,11 +288,11 @@ void JniTransport::processReceiveQueue()
             while (!receiveQueue_.empty()) {
                 auto& [needed, promise] = receiveQueue_.front();
 
-                if (receiveBuffer_.size() >= needed) {
-                    aasdk::common::Data data(receiveBuffer_.begin(),
-                                             receiveBuffer_.begin() + needed);
-                    receiveBuffer_.erase(receiveBuffer_.begin(),
-                                         receiveBuffer_.begin() + needed);
+                if (receiveBuffer_.size() - receiveReadPos_ >= needed) {
+                    auto first = receiveBuffer_.begin() + receiveReadPos_;
+                    aasdk::common::Data data(first, first + needed);
+                    receiveReadPos_ += needed;
+                    compactReceiveBuffer();
                     resolved.emplace_back(std::move(promise), std::move(data));
                     receiveQueue_.pop();
                 } else {

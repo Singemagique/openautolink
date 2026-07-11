@@ -61,6 +61,7 @@ public:
 private:
     void readThreadFunc();
     void processReceiveQueue();
+    void compactReceiveBuffer();  // reclaim consumed prefix; call under receiveMutex_
 
     boost::asio::io_service& ioService_;
     boost::asio::io_service::strand strand_;
@@ -71,6 +72,7 @@ private:
     std::mutex receiveMutex_;
     std::condition_variable receiveCv_;
     std::vector<uint8_t> receiveBuffer_;
+    size_t receiveReadPos_ = 0;  // NAT-8: consumed-offset into receiveBuffer_ (O(1) drain)
     std::queue<std::pair<size_t, ReceivePromise::Pointer>> receiveQueue_;
 
     // Read thread pulls from Java InputStream
