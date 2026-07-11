@@ -123,6 +123,11 @@ class TcpAdvertiser(
 
                 while (isRunning) {
                     val carSocket = server.accept()
+                    // Disable Nagle on the WiFi hop that carries AA video to the car.
+                    // Without TCP_NODELAY, Nagle + the car's delayed ACKs stall small
+                    // writes and collapse throughput — a ~700 Mbps 5 GHz link delivered
+                    // only ~674 kbps of video, so AA throttled 4K down to ~3 fps.
+                    runCatching { carSocket.tcpNoDelay = true }
                     val remoteIp = carSocket.inetAddress?.hostAddress ?: "unknown"
                     CompanionLog.i(TAG, "Car connected from $remoteIp")
                     stateListener.onConnecting()

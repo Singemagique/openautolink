@@ -85,6 +85,9 @@ class AaProxy(
             try {
                 while (isRunning) {
                     val aaSocket = server.accept()
+                    // Disable Nagle on this relay leg too (loopback, but keep the
+                    // whole path delay-free so nothing coalesces AA's writes).
+                    runCatching { aaSocket.tcpNoDelay = true }
                     CompanionLog.i(TAG, "Android Auto connected to proxy")
                     launchBridge(aaSocket)
                 }
