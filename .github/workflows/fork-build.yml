@@ -94,9 +94,11 @@ jobs:
           UPLOAD_STORE_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
+          GIT_SHA=$(git rev-parse --short HEAD)
           ./gradlew :app:bundleRelease \
             -PappId="${{ secrets.APP_ID }}" \
             -PoalVersionCode=${{ github.run_number }} \
+            -PoalGitSha="$GIT_SHA" \
             --no-daemon
 
       - name: Build companion APK
@@ -110,8 +112,10 @@ jobs:
       - name: Get version
         id: version
         run: |
-          VERSION=$(grep 'versionName' secrets/version.properties 2>/dev/null | cut -d= -f2 || true)
-          VERSION="${VERSION:-0.1.0}"
+          # Mirror the in-app versionName from app/build.gradle.kts
+          # (0.1.0-<versionCode>) so the release tag + artifact names match
+          # what Settings → Apps and the crash header report.
+          VERSION="0.1.0-${{ github.run_number }}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Create release

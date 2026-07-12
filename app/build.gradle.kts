@@ -14,8 +14,18 @@ android {
         applicationId = findProperty("appId") as? String ?: "com.openautolink.app"
         minSdk = 32
         targetSdk = 36
-        versionCode = (findProperty("oalVersionCode") as? String)?.toIntOrNull() ?: 1
-        versionName = (findProperty("oalVersionName") as? String) ?: "0.1.0"
+
+        // Version stamping. versionCode comes from CI (github.run_number). The
+        // versionName embeds it as "0.1.0-<code>" so a build is identifiable
+        // straight from Settings → Apps — every build otherwise reported the
+        // bare "0.1.0" and was indistinguishable. GIT_SHA is compiled in and
+        // surfaced in the crash-report header + startup log for exact traceability.
+        // NOTE: keep the "0.1.0" base in sync with the "Get version" step in
+        // .github/workflows/fork-build.yml (release tag/artifact naming).
+        val resolvedVersionCode = (findProperty("oalVersionCode") as? String)?.toIntOrNull() ?: 1
+        versionCode = resolvedVersionCode
+        versionName = (findProperty("oalVersionName") as? String) ?: "0.1.0-$resolvedVersionCode"
+        buildConfigField("String", "GIT_SHA", "\"${(findProperty("oalGitSha") as? String) ?: "local"}\"")
 
         // SEC-3: the ADB settings/reconnect BroadcastReceiver is disabled by
         // default (release) and re-enabled only in debug builds below.
@@ -77,6 +87,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true  // needed for BuildConfig.GIT_SHA (build traceability)
     }
 
     // NDK build for aasdk JNI

@@ -4,6 +4,7 @@ import android.app.Application
 import android.os.Environment
 import android.util.Log
 import com.openautolink.app.diagnostics.DiagnosticLog
+import com.openautolink.app.diagnostics.OalLog
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
@@ -33,6 +34,14 @@ class OalApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Stamp the running build into the log pipeline as early as possible so
+        // every line — and the in-app Logs viewer — names the exact build. All
+        // builds otherwise reported "0.1.0"; now it's "0.1.0-<code> · <sha>".
+        OalLog.init(BuildConfig.VERSION_NAME)
+        OalLog.i(
+            "app",
+            "OpenAutoLink ${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE}) sha ${BuildConfig.GIT_SHA} starting"
+        )
         loadPreviousCrash()
         loadPreviousNativeCrash()
         installCrashHandler()
@@ -145,6 +154,7 @@ class OalApplication : Application() {
                 val sw = StringWriter()
                 val pw = PrintWriter(sw)
                 pw.println("=== OpenAutoLink Crash Report ===")
+                pw.println("App: ${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE}) sha ${BuildConfig.GIT_SHA}")
                 pw.println("Time: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())}")
                 pw.println("Thread: ${thread.name}")
                 pw.println("Android: ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")

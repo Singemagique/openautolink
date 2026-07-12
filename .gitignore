@@ -51,7 +51,9 @@ scripts/mfi_read2
 # Keys/secrets
 *.keystore
 *.jks
+*.b64
 secrets/
+upload-key.b64
 
 # Legacy app reference (not part of build)
 app_v1/
