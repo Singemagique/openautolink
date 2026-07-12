@@ -225,7 +225,13 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         const val DEFAULT_AA_DECODER_ADDITIONAL_DEPTH = 1
         const val DEFAULT_DRIVE_SIDE = "left"
         const val DEFAULT_GPS_FORWARDING = true
-        const val DEFAULT_CLUSTER_NAVIGATION = true
+        // Default OFF: binding the AAOS cluster requires launching CarAppActivity,
+        // which backgrounds the projection. On GM AAOS the cluster session is
+        // frequently killed, and Android's background-activity-launch limits block
+        // bringing the projection back — freezing it behind a "Cluster navigation
+        // service active" card until the user manually switches apps. Opt-in for
+        // those who want cluster nav and accept the trade-off.
+        const val DEFAULT_CLUSTER_NAVIGATION = false
         const val DEFAULT_OVERLAY_STATS_BUTTON = true
         const val DEFAULT_FILE_LOGGING_ENABLED = false
         const val DEFAULT_FILE_LOGGING_AUTOSTART_USB = false
