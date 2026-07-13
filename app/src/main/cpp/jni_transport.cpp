@@ -6,9 +6,11 @@
  * Promise-based transport interface.
  */
 #include "jni_transport.h"
+#include "jni_log_bridge.h"
 
 #include <android/log.h>
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 
 #define LOG_TAG "OAL-JniTransport"
@@ -22,6 +24,15 @@ static constexpr size_t kReadBufferSize = 16384;
 // NAT-8: only reclaim the consumed prefix once this many bytes have been read,
 // so draining is amortized O(1) instead of an O(n) front-erase on every receive.
 static constexpr size_t kReceiveCompactThreshold = 256 * 1024;
+// NAT-9: cap unbounded receiveBuffer_ growth. If aasdk consumption falls behind
+// the socket read rate, the read thread stops pulling at this backlog so TCP/USB
+// flow control throttles the phone — instead of the buffer growing without bound
+// until the process OOM-aborts after minutes. 8 MB is ~4s of 1080p at 15 Mbps,
+// far beyond any healthy backlog, so this only engages under real congestion.
+static constexpr size_t kReceiveHighWaterMark = 8 * 1024 * 1024;
+// If the backlog stays pinned above the high-water this long the consumer is
+// wedged; abort the transport for a clean reconnect rather than block forever.
+static constexpr int kBackpressureStallAbortMs = 5000;
 
 JniTransport::JniTransport(boost::asio::io_service& ioService, JavaVM* jvm, jobject javaTransport)
     : ioService_(ioService)
@@ -104,8 +115,11 @@ void JniTransport::receive(size_t size, ReceivePromise::Pointer promise)
             }
         }
 
-        // Resolve outside the lock to avoid re-entrancy deadlock
         if (canResolve) {
+            // Freed space in the buffer — wake the read thread if backpressure
+            // (NAT-9) had it throttled. Resolve outside the lock to avoid
+            // re-entrancy deadlock.
+            receiveCv_.notify_one();
             promise->resolve(std::move(resolveData));
         }
     });
@@ -203,6 +217,43 @@ void JniTransport::readThreadFunc()
     std::vector<uint8_t> localBuf(kReadBufferSize);
 
     while (!stopped_) {
+        // Backpressure gate (NAT-9): if aasdk consumption has fallen behind and
+        // the unread backlog reached the high-water mark, stop pulling from the
+        // socket so TCP/USB flow control throttles the phone. Without this the
+        // buffer grew without bound whenever drain-rate < fill-rate and
+        // OOM-aborted the whole process after a few minutes of streaming.
+        bool backpressureAborted = false;
+        {
+            std::unique_lock<std::mutex> lock(receiveMutex_);
+            if (receiveBuffer_.size() - receiveReadPos_ >= kReceiveHighWaterMark) {
+                if (!loggedBackpressure_) {
+                    loggedBackpressure_ = true;
+                    const size_t backlogKb =
+                        (receiveBuffer_.size() - receiveReadPos_) / 1024;
+                    lock.unlock();
+                    OAL_LOGW(LOG_TAG, "Receive backlog %zuKB hit high-water — throttling "
+                             "socket reads (consumer behind)", backlogKb);
+                    lock.lock();
+                }
+                int stalledMs = 0;
+                while (!stopped_ &&
+                       receiveBuffer_.size() - receiveReadPos_ >= kReceiveHighWaterMark) {
+                    receiveCv_.wait_for(lock, std::chrono::milliseconds(50));
+                    stalledMs += 50;
+                    if (stalledMs >= kBackpressureStallAbortMs) {
+                        backpressureAborted = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (backpressureAborted) {
+            OAL_LOGE(LOG_TAG, "Receive backlog pinned above high-water >%dms — consumer "
+                     "wedged; aborting transport for clean reconnect", kBackpressureStallAbortMs);
+            break;
+        }
+        if (stopped_) break;
+
         if (!readMethodId_) {
             LOGE("readBytes method not found");
             break;
@@ -299,6 +350,12 @@ void JniTransport::processReceiveQueue()
                     break; // Not enough data yet
                 }
             }
+        }
+
+        if (!resolved.empty()) {
+            // Drained backlog — wake the read thread if NAT-9 backpressure
+            // paused it.
+            receiveCv_.notify_one();
         }
 
         // Resolve outside the lock

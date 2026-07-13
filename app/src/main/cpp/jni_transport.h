@@ -73,6 +73,7 @@ private:
     std::condition_variable receiveCv_;
     std::vector<uint8_t> receiveBuffer_;
     size_t receiveReadPos_ = 0;  // NAT-8: consumed-offset into receiveBuffer_ (O(1) drain)
+    bool loggedBackpressure_ = false;  // NAT-9: one-shot log when read-side backpressure first engages (read thread only)
     std::queue<std::pair<size_t, ReceivePromise::Pointer>> receiveQueue_;
 
     // Read thread pulls from Java InputStream
