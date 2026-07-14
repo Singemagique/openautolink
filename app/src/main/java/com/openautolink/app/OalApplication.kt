@@ -28,6 +28,9 @@ class OalApplication : Application() {
     companion object {
         private const val CRASH_FILE = "oal-crash.txt"
         private const val NATIVE_CRASH_FILE = "oal-native-crash.txt"
+        // Per-session memory trail (written by SessionManager.watchMemory).
+        // Survives an uncatchable LMK SIGKILL so it can be shown after relaunch.
+        private const val MEM_TRAIL_FILE = "oal-memtrail.txt"
         /** Max crash file size — prevents unbounded growth from crash loops. */
         private const val MAX_CRASH_FILE_SIZE = 64 * 1024L // 64 KB
     }
@@ -44,6 +47,7 @@ class OalApplication : Application() {
         )
         loadPreviousCrash()
         loadPreviousNativeCrash()
+        loadPreviousMemTrail()
         installCrashHandler()
         installNativeCrashHandler()
         // Start VHAL ignition watcher for the lifetime of the process so the
@@ -134,6 +138,29 @@ class OalApplication : Application() {
             crashFile.delete()
         } catch (e: Throwable) {
             Log.w("OAL-App", "Failed to load previous native crash: ${e.message}")
+        }
+    }
+
+    /**
+     * Load the previous session's memory trail (written every 30s by
+     * SessionManager.watchMemory) into DiagnosticLog as INFO. Because the Low
+     * Memory Killer kills with an uncatchable SIGKILL, no crash report is
+     * written — but this file persists, so the pre-kill memory trajectory is
+     * visible in the in-app Logs viewer (INFO tab) after relaunch.
+     */
+    private fun loadPreviousMemTrail() {
+        try {
+            val f = File(filesDir, MEM_TRAIL_FILE).takeIf { it.exists() } ?: return
+            val content = f.readText()
+            f.delete()
+            if (content.isBlank()) return
+            DiagnosticLog.i("mem-prev", "=== Memory trail from previous session (pre-kill) ===")
+            for (line in content.lines()) {
+                if (line.isNotBlank()) DiagnosticLog.i("mem-prev", line)
+            }
+            Log.i("OAL-App", "Previous memory trail loaded (${content.length} chars)")
+        } catch (e: Throwable) {
+            Log.w("OAL-App", "Failed to load memory trail: ${e.message}")
         }
     }
 

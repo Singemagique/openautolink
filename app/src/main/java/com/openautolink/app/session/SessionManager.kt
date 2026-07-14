@@ -1735,6 +1735,7 @@ class SessionManager(
      * before the kill. getMemoryInfo is a cheap /proc read at this cadence.
      */
     private suspend fun watchMemory() {
+        val ctx = context
         var baselinePssMb = -1L
         while (true) {
             try {
@@ -1743,19 +1744,37 @@ class SessionManager(
                 fun statMb(key: String): Long =
                     mi.getMemoryStat(key)?.toLongOrNull()?.div(1024L) ?: -1L
                 val pssMb = mi.totalPss / 1024L
-                if (baselinePssMb < 0) baselinePssMb = pssMb
+                val firstTick = baselinePssMb < 0
+                if (firstTick) baselinePssMb = pssMb
                 val deltaMb = pssMb - baselinePssMb
-                OalLog.i(
-                    "mem",
-                    "PSS=${pssMb}MB (${if (deltaMb >= 0) "+" else ""}$deltaMb since start) " +
-                        "java=${statMb("summary.java-heap")} native=${statMb("summary.native-heap")} " +
-                        "gfx=${statMb("summary.graphics")} other=${statMb("summary.private-other")}"
-                )
+                val line = "PSS=${pssMb}MB (${if (deltaMb >= 0) "+" else ""}$deltaMb since start) " +
+                    "java=${statMb("summary.java-heap")} native=${statMb("summary.native-heap")} " +
+                    "gfx=${statMb("summary.graphics")} other=${statMb("summary.private-other")}"
+                OalLog.i("mem", line)
+                // Persist to a small file so the trail survives the uncatchable
+                // Low-Memory-Killer SIGKILL (the in-memory log dies with the
+                // process) and reloads on next launch, like the crash report.
+                if (ctx != null) writeMemTrail(ctx, line, firstTick)
             } catch (e: Exception) {
                 OalLog.w("mem", "memory probe failed: ${e.message}")
             }
             delay(30_000L)
         }
+    }
+
+    /** Append one memory-trail line to a per-session file (truncated on the
+     *  first tick). Filename must match OalApplication.MEM_TRAIL_FILE. */
+    private fun writeMemTrail(ctx: Context, line: String, reset: Boolean) {
+        try {
+            val f = java.io.File(ctx.filesDir, "oal-memtrail.txt")
+            val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                .format(java.util.Date())
+            if (reset) {
+                f.writeText("=== Memory trail (this session) ===\n$stamp $line\n")
+            } else {
+                f.appendText("$stamp $line\n")
+            }
+        } catch (_: Exception) {}
     }
 
     private suspend fun recoverDecoder() {
