@@ -376,6 +376,7 @@ class SessionManager(
     private var keyframeWatchJob: Job? = null
     private var callStateJob: Job? = null
     private var videoStallWatchJob: Job? = null
+    private var memoryWatchJob: Job? = null
 
     /**
      * True while the app is intentionally idle (Activity paused / screen off /
@@ -712,6 +713,13 @@ class SessionManager(
             // Watch for a wedged AA video channel (issue #34)
             videoStallWatchJob?.cancel()
             videoStallWatchJob = launch { watchVideoStall() }
+
+            // Watch process memory. A slow native/graphics leak reaches the
+            // system Low Memory Killer threshold and dies via an uncatchable
+            // SIGKILL — no crash report ("nothing in the logs"). Periodic PSS
+            // breakdown makes the growth visible before the kill.
+            memoryWatchJob?.cancel()
+            memoryWatchJob = launch { watchMemory() }
 
             // Start direct mode session
             startSession(directTransport, hotspotSsid, hotspotPassword,
@@ -1122,6 +1130,8 @@ class SessionManager(
         callStateJob = null
         videoStallWatchJob?.cancel()
         videoStallWatchJob = null
+        memoryWatchJob?.cancel()
+        memoryWatchJob = null
         aasdkSession?.stop()
         aasdkSession = null
         stopDirectLocationForwarding()
@@ -1248,6 +1258,7 @@ class SessionManager(
                     keyframeWatchJob?.cancelAndJoin()
                     callStateJob?.cancelAndJoin()
                     videoStallWatchJob?.cancelAndJoin()
+                    memoryWatchJob?.cancelAndJoin()
                 } catch (_: Exception) {}
                 doReconnectAfterCancel(
                     codecPreference, micSourcePreference, scalingMode, directTransport,
@@ -1712,6 +1723,38 @@ class SessionManager(
                 _statusMessage.value = "Video error -- recovering..."
                 recoverDecoder()
             }
+        }
+    }
+
+    /**
+     * Periodic process-memory watchdog. A slow native/graphics leak eventually
+     * trips the system Low Memory Killer, which kills the app with an
+     * uncatchable SIGKILL — no Java or native crash report ("nothing in the
+     * logs"). Logging the PSS breakdown every 30s makes the growth (and which
+     * pool leaks: java / native / graphics) visible in the in-app Logs viewer
+     * before the kill. getMemoryInfo is a cheap /proc read at this cadence.
+     */
+    private suspend fun watchMemory() {
+        var baselinePssMb = -1L
+        while (true) {
+            try {
+                val mi = android.os.Debug.MemoryInfo()
+                android.os.Debug.getMemoryInfo(mi)
+                fun statMb(key: String): Long =
+                    mi.getMemoryStat(key)?.toLongOrNull()?.div(1024L) ?: -1L
+                val pssMb = mi.totalPss / 1024L
+                if (baselinePssMb < 0) baselinePssMb = pssMb
+                val deltaMb = pssMb - baselinePssMb
+                OalLog.i(
+                    "mem",
+                    "PSS=${pssMb}MB (${if (deltaMb >= 0) "+" else ""}$deltaMb since start) " +
+                        "java=${statMb("summary.java-heap")} native=${statMb("summary.native-heap")} " +
+                        "gfx=${statMb("summary.graphics")} other=${statMb("summary.private-other")}"
+                )
+            } catch (e: Exception) {
+                OalLog.w("mem", "memory probe failed: ${e.message}")
+            }
+            delay(30_000L)
         }
     }
 
