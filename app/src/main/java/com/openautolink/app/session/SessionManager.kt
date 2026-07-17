@@ -79,6 +79,23 @@ class SessionManager(
         private const val VIDEO_STALL_THRESHOLD_MS = 8_000L
         private const val VIDEO_STALL_POLL_MS = 1_000L
 
+        /**
+         * Video-stall watchdog master switch (issue #34). Set to false to test
+         * the upstream finding — field reports on mossyhub/main correlate
+         * REMOVING this watchdog with the freeze/crash going away. Leading
+         * theory on this fork: each forced [AasdkSession.forceReconnect] teardown
+         * leaks native/graphics memory, and the churn accumulates into the
+         * ~20-min Low-Memory-Killer SIGKILL (no crash report — the LMK
+         * fingerprint). The memory watchdog stays on, so we CONFIRM the
+         * mechanism: crash gone + flat memory => churn was it.
+         *
+         * When off, a genuinely wedged video channel (original #34 symptom) will
+         * NOT auto-recover — acceptable for the test, since that presents as a
+         * responsive-UI freeze, not the process-killing crash we're chasing.
+         * Set back to true to restore stall recovery.
+         */
+        private const val VIDEO_STALL_WATCHDOG_ENABLED = false
+
         // Activity-sourced UI-mode snapshot that can be published before
         // SessionManager exists (ViewModel lazy creation path).
         @Volatile
@@ -1843,6 +1860,10 @@ class SessionManager(
      *  - re-arms the baseline after each forced reconnect so we don't loop
      */
     private suspend fun watchVideoStall() {
+        // #34 watchdog gated OFF (see VIDEO_STALL_WATCHDOG_ENABLED). Its forced
+        // reconnects are the prime suspect for the reconnect-churn -> memory-leak
+        // -> LMK crash; return immediately, leaving the launched job a no-op.
+        if (!VIDEO_STALL_WATCHDOG_ENABLED) return
         // Wait for a session to exist.
         while (aasdkSession == null) { delay(VIDEO_STALL_POLL_MS) }
         val session = aasdkSession ?: return
