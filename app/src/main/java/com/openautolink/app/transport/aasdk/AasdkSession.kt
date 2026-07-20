@@ -12,6 +12,7 @@ import com.openautolink.app.transport.usb.UsbConnectionManager
 import com.openautolink.app.video.VideoFrame
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -164,6 +165,15 @@ class AasdkSession(
 
     private var transportPipe: AasdkTransportPipe? = null
 
+    /**
+     * The single in-flight auto-reconnect retry (upstream #52). Previously the
+     * retry was a fire-and-forget `scope.launch { delay(); start() }` with no
+     * handle, so overlapping teardowns each armed an independent timer and a
+     * leftover timer could restart the transport ON TOP of an already-healthy
+     * session. Keeping one cancellable job makes reconnects single-flight.
+     */
+    private var reconnectJob: Job? = null
+
     // -- Lifecycle --
 
     fun start() {
@@ -257,6 +267,10 @@ class AasdkSession(
     fun stop() {
         explicitStop = true
         OalLog.i(TAG, "Stopping aasdk session")
+        // Single-flight (#52): drop any pending retry so a stale timer can't
+        // resurrect the transport after an intentional stop.
+        reconnectJob?.cancel()
+        reconnectJob = null
         _tcpConnector?.stop()
         _tcpConnector = null
         _usbConnectionManager?.stop()
@@ -275,6 +289,10 @@ class AasdkSession(
      */
     fun forceReconnect(reason: String) {
         OalLog.w(TAG, "Force reconnect: $reason")
+        // Single-flight (#52): we restart immediately below, so cancel any
+        // pending auto-retry rather than let it fire on top of us.
+        reconnectJob?.cancel()
+        reconnectJob = null
         // Treat the upcoming nativeStopSession() as an explicit stop so the
         // onSessionStopped handler doesn't schedule its own auto-reconnect 3s
         // later — we're doing the restart ourselves immediately. Without this
@@ -365,6 +383,13 @@ class AasdkSession(
 
     override fun onSessionStarted() {
         OalLog.i(TAG, "AA session started (native)")
+        // Single-flight (#52): a healthy session must never be torn down by a
+        // retry timer armed during an earlier teardown.
+        reconnectJob?.let { job ->
+            if (job.isActive) OalLog.i(TAG, "Cancelled pending reconnect — session is up")
+            job.cancel()
+        }
+        reconnectJob = null
         // NOTE: do NOT reset consecutiveReconnectFailures here. A session that
         // dies seconds after starting (Error-30 flap) would otherwise re-enter
         // backoff as "retry #1" forever and never escalate (issue #30). The
@@ -398,50 +423,65 @@ class AasdkSession(
             explicitStop = true
         }
 
+        // State/control emission always runs — it must never be cancelled by the
+        // reconnect single-flighting below.
         scope.launch {
             _connectionState.value = ConnectionState.DISCONNECTED
             _controlMessages.emit(ControlMessage.PhoneDisconnected(reason = reason))
+        }
 
-            // Auto-reconnect if this wasn't an explicit stop (e.g., car sleep/wake,
-            // phone disconnect). Restart the transport connector after a delay so it
-            // retries connecting once WiFi comes back.
-            if (!explicitStop) {
-                // Dwell gate (issue #30): if the session that just died had been up
-                // longer than STABLE_DWELL_MS it was a genuine connection, so this
-                // is a FRESH failure series — reset the counter. If it died fast
-                // (flap), keep accumulating so backoff escalates toward the 30s cap
-                // instead of pinning at "retry #1" and re-provoking Error 30.
-                val dwellMs = if (sessionStartedAtMs > 0L)
-                    android.os.SystemClock.elapsedRealtime() - sessionStartedAtMs
-                else
-                    Long.MAX_VALUE
-                if (dwellMs >= STABLE_DWELL_MS) {
-                    consecutiveReconnectFailures = 0
-                }
-                sessionStartedAtMs = 0L
+        // Auto-reconnect if this wasn't an explicit stop (e.g., car sleep/wake,
+        // phone disconnect). Restart the transport connector after a delay so it
+        // retries connecting once WiFi comes back.
+        if (explicitStop) return
 
-                consecutiveReconnectFailures++
-                _reconnectAttempt.value = consecutiveReconnectFailures
+        // Single-flight (#52): cancel any pending retry so only the newest one is
+        // ever in flight. Without this, overlapping teardowns each armed their own
+        // timer and a leftover timer would restart the transport on top of a
+        // healthy session — a self-inflicted reconnect storm whose repeated
+        // teardowns also drove the memory growth behind the LMK kill.
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            // Dwell gate (issue #30): if the session that just died had been up
+            // longer than STABLE_DWELL_MS it was a genuine connection, so this
+            // is a FRESH failure series — reset the counter. If it died fast
+            // (flap), keep accumulating so backoff escalates toward the 30s cap
+            // instead of pinning at "retry #1" and re-provoking Error 30.
+            val dwellMs = if (sessionStartedAtMs > 0L)
+                android.os.SystemClock.elapsedRealtime() - sessionStartedAtMs
+            else
+                Long.MAX_VALUE
+            if (dwellMs >= STABLE_DWELL_MS) {
+                consecutiveReconnectFailures = 0
+            }
+            sessionStartedAtMs = 0L
 
-                // Exponential backoff: 3s base, longer if protocol error (phone
-                // needs time to tear down old SSL session). Cap at 30s. Error 30
-                // (stale SSL session) gets a higher floor — a 5s re-dial often
-                // beat the phone's own teardown and re-provoked the rejection.
-                val baseDelayMs = if (lastFailureWasProtocolError) PROTOCOL_ERROR_BASE_MS else 3000L
-                val backoffMs = (baseDelayMs * (1L shl (consecutiveReconnectFailures - 1).coerceAtMost(3)))
-                    .coerceAtMost(30_000L)
-                OalLog.i(TAG, "Session died unexpectedly — retry #$consecutiveReconnectFailures in ${backoffMs}ms" +
-                    if (lastFailureWasProtocolError) " (protocol error, extended backoff)" else "")
-                lastFailureWasProtocolError = false
+            consecutiveReconnectFailures++
+            _reconnectAttempt.value = consecutiveReconnectFailures
 
-                kotlinx.coroutines.delay(backoffMs)
-                if (!explicitStop) {
-                    OalLog.i(TAG, "Restarting transport connector")
-                    when (transportMode) {
-                        "usb" -> startUsb()
-                        else -> startTcp()
-                    }
-                }
+            // Exponential backoff: 3s base, longer if protocol error (phone
+            // needs time to tear down old SSL session). Cap at 30s. Error 30
+            // (stale SSL session) gets a higher floor — a 5s re-dial often
+            // beat the phone's own teardown and re-provoked the rejection.
+            val baseDelayMs = if (lastFailureWasProtocolError) PROTOCOL_ERROR_BASE_MS else 3000L
+            val backoffMs = (baseDelayMs * (1L shl (consecutiveReconnectFailures - 1).coerceAtMost(3)))
+                .coerceAtMost(30_000L)
+            OalLog.i(TAG, "Session died unexpectedly — retry #$consecutiveReconnectFailures in ${backoffMs}ms" +
+                if (lastFailureWasProtocolError) " (protocol error, extended backoff)" else "")
+            lastFailureWasProtocolError = false
+
+            kotlinx.coroutines.delay(backoffMs)
+            // Re-check after sleeping: a session may have come up (or an explicit
+            // stop arrived) while we waited. Never restart on top of a live one.
+            if (explicitStop || _connectionState.value == ConnectionState.CONNECTED) {
+                OalLog.i(TAG, "Skipping retry — " +
+                    if (explicitStop) "explicit stop" else "already connected")
+                return@launch
+            }
+            OalLog.i(TAG, "Restarting transport connector")
+            when (transportMode) {
+                "usb" -> startUsb()
+                else -> startTcp()
             }
         }
     }
