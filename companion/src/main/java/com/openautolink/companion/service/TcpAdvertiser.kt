@@ -181,10 +181,11 @@ class TcpAdvertiser(
                             aaLaunchAttempts = 0
                             stateListener.onProxyConnected()
                         }
-                        override fun onDisconnected() {
-                            CompanionLog.i(TAG, "Warm proxy disconnected")
+                        override fun onDisconnected(unexpected: Boolean) {
+                            CompanionLog.i(TAG, "Warm proxy disconnected (unexpected=$unexpected)")
                             stateListener.onProxyDisconnected()
                             isLaunching = false
+                            if (unexpected) recoverFromUnexpectedBreak()
                         }
                     },
                 )
@@ -383,11 +384,12 @@ class TcpAdvertiser(
                             stateListener.onProxyConnected()
                         }
 
-                        override fun onDisconnected() {
-                            CompanionLog.i(TAG, "AA TCP proxy disconnected")
+                        override fun onDisconnected(unexpected: Boolean) {
+                            CompanionLog.i(TAG, "AA TCP proxy disconnected (unexpected=$unexpected)")
                             stateListener.onProxyDisconnected()
                             // Re-accept next connection
                             isLaunching = false
+                            if (unexpected) recoverFromUnexpectedBreak()
                         }
                     },
                 )
@@ -402,6 +404,29 @@ class TcpAdvertiser(
                 stateListener.onProxyDisconnected()
             }
         }
+    }
+
+    /**
+     * Recover from an AA bridge that broke on its own (upstream #54).
+     *
+     * When Android Auto closes its localhost socket mid-drive the bridge ends,
+     * but nothing closed the car's TCP socket — and because the WiFi L2 link
+     * stays up the car never sees a FIN/RST. It was left on a half-open,
+     * still-ESTABLISHED socket showing a frozen frame until its ~9s native ping
+     * timeout, which tears down without reconnecting. That is the "won't
+     * reconnect until I restart the companion" symptom.
+     *
+     * So: close the car socket, giving the car a clean reset so its own
+     * reconnect fires immediately instead of waiting out the ping timeout, and
+     * re-fire the AA launch intent so the phone actively rebuilds the bridge
+     * rather than waiting to be dialled.
+     */
+    private fun recoverFromUnexpectedBreak() {
+        CompanionLog.w(TAG, "Unexpected bridge break — resetting car socket + relaunching AA")
+        activeCarSocket?.let { runCatching { it.close() } }
+        activeCarSocket = null
+        val port = activeProxy?.localPort ?: 0
+        if (port > 0) fireAaLaunchIntent(port)
     }
 
     private fun fireAaLaunchIntent(localPort: Int) {

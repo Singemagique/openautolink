@@ -29,7 +29,18 @@ class AaProxy(
 ) {
     interface Listener {
         fun onConnected()
-        fun onDisconnected()
+
+        /**
+         * @param unexpected true when the bridge broke on its own — e.g. Android
+         *   Auto closed its own localhost socket mid-drive ("Car->AA error:
+         *   Broken pipe") — and false during an intentional [stop].
+         *
+         *   An unexpected break leaves the CAR socket half-open unless the
+         *   listener resets it: still ESTABLISHED with no FIN/RST (the WiFi L2
+         *   link stays up), so the car sits on a frozen frame until its ~9s
+         *   native ping timeout, which tears down without reconnecting.
+         */
+        fun onDisconnected(unexpected: Boolean)
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -142,12 +153,20 @@ class AaProxy(
             } catch (e: Exception) {
                 CompanionLog.e(TAG, "Bridge error: ${e.message}")
             } finally {
-                CompanionLog.i(TAG, "Bridge closed")
+                // isRunning still true => the bridge broke on its own (AA closed
+                // its localhost socket) rather than via an intentional stop().
+                // The listener must then reset the car socket — see
+                // Listener.onDisconnected.
+                val unexpected = isRunning
+                CompanionLog.i(TAG, "Bridge closed (unexpected=$unexpected)")
                 activeCarSocket = null
                 runCatching { aaSocket.close() }
-                // Don't close carSocket here — let the TcpAdvertiser manage it via cleanup()
+                // carSocket is owned by TcpAdvertiser, which closes it on an
+                // unexpected break so the car gets a clean reset instead of a
+                // half-open socket. (An earlier comment here promised a
+                // TcpAdvertiser cleanup() that never existed.)
                 if (activeBridges.decrementAndGet() <= 0) {
-                    listener?.onDisconnected()
+                    listener?.onDisconnected(unexpected)
                 }
             }
         }
