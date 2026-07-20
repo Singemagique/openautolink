@@ -44,6 +44,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -1347,6 +1348,33 @@ private fun FileLoggingSection() {
                 )
             }
 
+            // Share the log off-device. The files live under Android/data/,
+            // which Android 11+ forbids the Files app from browsing — so
+            // without this they're unreadable on the phone without ADB.
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = {
+                    val version = runCatching {
+                        context.packageManager.getPackageInfo(context.packageName, 0).versionName
+                    }.getOrNull() ?: "?"
+                    val intent = com.openautolink.companion.diagnostics.LogShare
+                        .shareIntent(context, version)
+                    if (intent == null) {
+                        android.widget.Toast.makeText(
+                            context,
+                            "No log yet — turn on \"Log to file\", reproduce the " +
+                                "problem, then share.",
+                            android.widget.Toast.LENGTH_LONG,
+                        ).show()
+                    } else {
+                        context.startActivity(intent)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Share log")
+            }
+
             Spacer(Modifier.height(8.dp))
             Text(
                 text = "Logs persist as long as this toggle is on, while the " +
@@ -1356,7 +1384,10 @@ private fun FileLoggingSection() {
                     "Recommended only for troubleshooting — turn this back off " +
                     "when you're done. Continuous file logging adds I/O overhead " +
                     "and can affect proxy throughput.\n\n" +
-                    "Files: Android/data/com.openautolink.companion/files/openautolink/logs/",
+                    "Files live in Android/data/com.openautolink.companion/files/" +
+                    "openautolink/logs/ — Android 11+ blocks the Files app from " +
+                    "browsing there, so use \"Share log\" above to send the recent " +
+                    "log to yourself (email, Drive, notes) or paste it into a report.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
