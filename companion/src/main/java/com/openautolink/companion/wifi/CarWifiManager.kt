@@ -161,6 +161,14 @@ class CarWifiManager(private val context: Context) {
                 _state.value = State.Connected(entry.ssid)
                 attempt = 0
                 cancelRearm()
+                // Log the association quality (band / link rate / rssi). A poor
+                // initial association — 2.4 GHz or a low MCS rate — is the leading
+                // suspect for the "low bitrate & laggy until I manually rejoin"
+                // symptom (a fresh requestNetwork, i.e. the Reconnect button, lands
+                // a better one). Sample now (band is fixed at association) and again
+                // after the rate settles, so a shared log shows both.
+                logLinkQuality(network, "on connect")
+                handler.postDelayed({ if (running) logLinkQuality(network, "+10s") }, 10_000L)
                 // Keep the callback registered — unregistering here would tear down
                 // the secondary WiFi network, removing the phone's IP on the car's
                 // subnet and making the car unable to reach our server ports.
@@ -227,6 +235,39 @@ class CarWifiManager(private val context: Context) {
     private fun cancelRearm() {
         rearmRunnable?.let { handler.removeCallbacks(it) }
         rearmRunnable = null
+    }
+
+    /**
+     * Log the car-link band / rate / signal so a shared companion log reveals
+     * whether a bad initial connect is a 2.4 GHz vs 5 GHz band problem, a low
+     * link rate (RF/association), or fine (pointing the lag elsewhere). Reads
+     * the WifiInfo for THIS requested network via NetworkCapabilities, falling
+     * back to the primary connection info. Best-effort — never throws.
+     */
+    private fun logLinkQuality(network: Network, whenLabel: String) {
+        try {
+            val caps = connectivityManager.getNetworkCapabilities(network)
+            val info = (caps?.transportInfo as? android.net.wifi.WifiInfo)
+                ?: @Suppress("DEPRECATION") wifiManager.connectionInfo
+            if (info == null) {
+                CompanionLog.w(TAG, "Link ($whenLabel): no WifiInfo available")
+                return
+            }
+            val freq = info.frequency
+            val band = when {
+                freq >= 5925 -> "6GHz"
+                freq >= 4900 -> "5GHz"
+                freq in 2300..2600 -> "2.4GHz"
+                else -> "?"
+            }
+            CompanionLog.i(
+                TAG,
+                "Link ($whenLabel): $band freq=${freq}MHz " +
+                    "linkSpeed=${info.linkSpeed}Mbps rssi=${info.rssi}dBm",
+            )
+        } catch (e: Exception) {
+            CompanionLog.w(TAG, "Link probe ($whenLabel) failed: ${e.message}")
+        }
     }
 
     private fun releaseCallback() {
