@@ -107,7 +107,11 @@ jobs:
           UPLOAD_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
           UPLOAD_STORE_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
         run: |
-          ./gradlew :companion:assembleRelease --no-daemon
+          GIT_SHA=$(git rev-parse --short HEAD)
+          ./gradlew :companion:assembleRelease \
+            -PoalVersionCode=${{ github.run_number }} \
+            -PoalGitSha="$GIT_SHA" \
+            --no-daemon
 
       - name: Get version
         id: version

@@ -46,6 +46,11 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
         super.onCreate()
         _instance = this
         CompanionLog.init(com.openautolink.companion.BuildConfig.VERSION_NAME)
+        CompanionLog.i(
+            TAG,
+            "Companion ${com.openautolink.companion.BuildConfig.VERSION_NAME} " +
+                "sha ${com.openautolink.companion.BuildConfig.GIT_SHA} starting",
+        )
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification("Starting..."))
         // Hold multicast lock for mDNS discovery (some OEMs filter multicast when screen off)

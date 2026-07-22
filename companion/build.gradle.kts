@@ -12,8 +12,14 @@ android {
         applicationId = "com.openautolink.companion"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        // Mirror the car app: versionCode from CI (github.run_number) and a
+        // versionName that embeds it, so the companion build is identifiable in
+        // the log prefix and the Share-log header (every build otherwise reported
+        // a bare "1.0.0"). GIT_SHA is compiled in for exact traceability.
+        val resolvedVersionCode = (findProperty("oalVersionCode") as? String)?.toIntOrNull() ?: 1
+        versionCode = resolvedVersionCode
+        versionName = (findProperty("oalVersionName") as? String) ?: "1.0.0-$resolvedVersionCode"
+        buildConfigField("String", "GIT_SHA", "\"${(findProperty("oalGitSha") as? String) ?: "local"}\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
