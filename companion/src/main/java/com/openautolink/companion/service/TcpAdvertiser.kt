@@ -63,6 +63,12 @@ class TcpAdvertiser(
         private const val AA_CONNECT_TIMEOUT_MS = 8_000L
         /** Re-fire the AA launch intent up to this many times before resetting the car socket. */
         private const val MAX_AA_LAUNCH_RETRIES = 3
+        // #54 recovery loop-guard. Recoveries closer together than this are
+        // "rapid" (the relaunched bridge is instant-failing = car gone, not AA
+        // merely reconnecting); after this many rapid ones we stop relaunching
+        // and let the car redial.
+        private const val RECOVERY_MIN_INTERVAL_MS = 2_500L
+        private const val RECOVERY_MAX_RAPID = 3
         /** Times to retry port bind on EADDRINUSE before giving up. */
         private const val BIND_RETRY_MAX = 10
         /** Delay between bind retries (ms). 10 retries × 300ms = 3s max wait. */
@@ -75,6 +81,12 @@ class TcpAdvertiser(
     private var udpDiscoverySocket: java.net.DatagramSocket? = null
     private var activeProxy: AaProxy? = null
     private var activeCarSocket: Socket? = null
+    // #54 recovery loop-guard: when the car is genuinely gone (WiFi dropped, not
+    // just AA closing its localhost socket), relaunching AA rebuilds a bridge
+    // over a dead car socket that instant-fails, re-firing recovery ~3x/sec
+    // forever. Rate-limit + cap so we hand off to the car redial instead.
+    private var lastRecoveryMs = 0L
+    private var rapidRecoveryCount = 0
     private var nsdManager: NsdManager? = null
     private var nsdRegistrationListener: NsdManager.RegistrationListener? = null
     private var aaConnectWatchdog: Job? = null
@@ -420,8 +432,31 @@ class TcpAdvertiser(
      * reconnect fires immediately instead of waiting out the ping timeout, and
      * re-fire the AA launch intent so the phone actively rebuilds the bridge
      * rather than waiting to be dialled.
+     *
+     * Loop-guard: if the car is genuinely GONE (WiFi dropped, not AA merely
+     * closing its localhost socket) the relaunched bridge instant-fails over the
+     * dead car socket and re-fires this recovery in a tight ~3x/sec loop. So we
+     * rate-limit, and after a few rapid failures stop relaunching and let the
+     * car redial — TcpAdvertiser accepts a fresh car connection when WiFi returns
+     * (a path independent of this one). The counter self-resets once breaks are
+     * spaced out again.
      */
     private fun recoverFromUnexpectedBreak() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastRecoveryMs < RECOVERY_MIN_INTERVAL_MS) {
+            rapidRecoveryCount++
+            if (rapidRecoveryCount >= RECOVERY_MAX_RAPID) {
+                CompanionLog.w(
+                    TAG,
+                    "Bridge instant-failing (${rapidRecoveryCount}x rapid) — car appears " +
+                        "gone; pausing relaunch, waiting for it to redial",
+                )
+                return
+            }
+        } else {
+            rapidRecoveryCount = 0
+        }
+        lastRecoveryMs = now
         CompanionLog.w(TAG, "Unexpected bridge break — resetting car socket + relaunching AA")
         activeCarSocket?.let { runCatching { it.close() } }
         activeCarSocket = null
