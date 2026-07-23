@@ -58,6 +58,12 @@ class CarWifiManager(private val context: Context) {
     private var retryRunnable: Runnable? = null
     private var rearmRunnable: Runnable? = null
     private var activeSuggestions: List<WifiNetworkSuggestion> = emptyList()
+    // 5 GHz band pinning: the specifier otherwise let the phone pick and it kept
+    // landing on 2.4 GHz (laggy, and it collides with the BT the AA handshake
+    // uses). Pin 5 GHz when the AP is seen there; disable for the session if a
+    // pinned request fails, so a 2.4-GHz-only AP still connects.
+    private var bandPinDisabled = false
+    private var lastAttemptPinned5 = false
 
     fun start(carWifiEntries: List<CarWifiEntry>) {
         if (carWifiEntries.isEmpty()) {
@@ -67,6 +73,7 @@ class CarWifiManager(private val context: Context) {
         entries = carWifiEntries
         running = true
         attempt = 0
+        bandPinDisabled = false
         CompanionLog.i(TAG, "Starting car WiFi manager for ${entries.size} SSID(s)")
         registerSuggestions()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) tryConnect()
@@ -144,10 +151,22 @@ class CarWifiManager(private val context: Context) {
 
         releaseCallback()
 
-        val specifier = WifiNetworkSpecifier.Builder()
+        val specifierBuilder = WifiNetworkSpecifier.Builder()
             .setSsid(entry.ssid)
             .setWpa2Passphrase(entry.password)
-            .build()
+        // Pin 5 GHz when the car AP advertises this SSID there (per the last
+        // scan), to avoid the laggy 2.4 GHz association. Falls back to any band
+        // if 5 GHz isn't seen or a prior pinned attempt failed, so a 2.4-GHz-only
+        // AP still connects.
+        val pin5 = !bandPinDisabled &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            ssidSeenOn5GHz(entry.ssid)
+        if (pin5) {
+            specifierBuilder.setBand(android.net.wifi.ScanResult.WIFI_BAND_5_GHZ)
+            CompanionLog.i(TAG, "Pinning \"${entry.ssid}\" to 5GHz")
+        }
+        lastAttemptPinned5 = pin5
+        val specifier = specifierBuilder.build()
 
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
@@ -177,6 +196,12 @@ class CarWifiManager(private val context: Context) {
 
             override fun onUnavailable() {
                 if (!running) return
+                if (lastAttemptPinned5 && !bandPinDisabled) {
+                    // 5 GHz-pinned request failed — fall back to any band for the
+                    // rest of this session so we don't get stuck off-band.
+                    bandPinDisabled = true
+                    CompanionLog.w(TAG, "5GHz-pinned request failed — falling back to any band")
+                }
                 CompanionLog.w(TAG, "Attempt $attempt failed (SSID not in range yet)")
                 scheduleRetry()
             }
@@ -267,6 +292,30 @@ class CarWifiManager(private val context: Context) {
             )
         } catch (e: Exception) {
             CompanionLog.w(TAG, "Link probe ($whenLabel) failed: ${e.message}")
+        }
+    }
+
+    /**
+     * True if the last WiFi scan saw [ssid] on a 5 GHz channel. Lets us pin the
+     * band only when the car AP actually offers 5 GHz (avoids stalling a
+     * 2.4-GHz-only AP). Reads cached scanResults (needs location permission,
+     * which the app holds); best-effort — returns false on any failure.
+     */
+    @SuppressLint("MissingPermission")
+    private fun ssidSeenOn5GHz(ssid: String): Boolean {
+        return try {
+            val matches = (wifiManager.scanResults ?: emptyList()).filter { it.SSID == ssid }
+            val has5 = matches.any { it.frequency >= 4900 }
+            if (matches.isNotEmpty()) {
+                CompanionLog.i(
+                    TAG,
+                    "Scan: \"$ssid\" seen on freqs=${matches.map { it.frequency }.sorted()} (5GHz=$has5)",
+                )
+            }
+            has5
+        } catch (e: Exception) {
+            CompanionLog.w(TAG, "5GHz scan check failed: ${e.message}")
+            false
         }
     }
 
