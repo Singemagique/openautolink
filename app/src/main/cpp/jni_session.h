@@ -331,6 +331,7 @@ private:
         bool hideClock = false;
         bool hideSignal = false;
         bool hideBattery = false;
+        bool forwardCarGps = true;  // advertise SENSOR_LOCATION (car GPS) to AA
         bool autoNegotiate = true;
         std::string videoCodec = "h265";
         int realDensity = 0;

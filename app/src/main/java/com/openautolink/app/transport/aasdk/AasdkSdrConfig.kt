@@ -62,6 +62,11 @@ class AasdkSdrConfig(
     /** Hide battery indicator in AA status bar. */
     @JvmField val hideBattery: Boolean = false,
 
+    /** Advertise the car's LOCATION sensor to AA (car GPS forwarding). When
+     *  false the sensor is NOT advertised, so AA falls back to the phone's own
+     *  GPS. Takes effect on next connect — the SDR is negotiated at handshake. */
+    @JvmField val forwardCarGps: Boolean = true,
+
     /** Auto-negotiate video: true = send all resolutions/codecs, false = send only the configured one. */
     @JvmField val autoNegotiate: Boolean = true,
 

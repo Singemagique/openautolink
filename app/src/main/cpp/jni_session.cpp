@@ -246,6 +246,7 @@ void JniSession::start(JNIEnv* env, jobject transportPipe, jobject callback, job
     sdrConfig_.hideClock = env->GetBooleanField(sdrConfig, env->GetFieldID(sdrClass, "hideClock", "Z"));
     sdrConfig_.hideSignal = env->GetBooleanField(sdrConfig, env->GetFieldID(sdrClass, "hideSignal", "Z"));
     sdrConfig_.hideBattery = env->GetBooleanField(sdrConfig, env->GetFieldID(sdrClass, "hideBattery", "Z"));
+    sdrConfig_.forwardCarGps = env->GetBooleanField(sdrConfig, env->GetFieldID(sdrClass, "forwardCarGps", "Z"));
     sdrConfig_.autoNegotiate = env->GetBooleanField(sdrConfig, env->GetFieldID(sdrClass, "autoNegotiate", "Z"));
     sdrConfig_.videoCodec = readString("videoCodec");
     sdrConfig_.realDensity = env->GetIntField(sdrConfig, env->GetFieldID(sdrClass, "realDensity", "I"));
@@ -1429,7 +1430,13 @@ void JniSession::buildServiceDiscoveryResponse(
       namespace ST = aap_protobuf::service::sensorsource::message;
       auto* ss = svc->mutable_sensor_source_service();
       ss->add_sensors()->set_sensor_type(ST::SENSOR_DRIVING_STATUS_DATA);
-      ss->add_sensors()->set_sensor_type(ST::SENSOR_LOCATION);
+      // Advertise the car's location sensor only when GPS forwarding is enabled.
+      // Omitting it is what makes AA fall back to the phone's own GPS — merely
+      // stopping the location updates leaves AA subscribed and using stale car
+      // position instead of the phone's.
+      if (sdrConfig_.forwardCarGps) {
+          ss->add_sensors()->set_sensor_type(ST::SENSOR_LOCATION);
+      }
       ss->add_sensors()->set_sensor_type(ST::SENSOR_NIGHT_MODE);
       ss->add_sensors()->set_sensor_type(ST::SENSOR_SPEED);
       ss->add_sensors()->set_sensor_type(ST::SENSOR_GEAR);

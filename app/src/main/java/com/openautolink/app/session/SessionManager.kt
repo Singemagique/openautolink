@@ -981,6 +981,7 @@ class SessionManager(
             hideSignal = hideSignal,
             hideBattery = hideBattery,
             autoNegotiate = videoAutoNegotiate,
+            forwardCarGps = gpsForwardingEnabled(),
             videoCodec = codec,
             // realDensity removed — interferes with pixel_aspect_ratio_e4 on some AA versions
             safeAreaTop = effSafeTop,
@@ -1097,9 +1098,30 @@ class SessionManager(
         OalLog.i(TAG, "aasdk JNI session started ($directTransport transport)")
     }
 
+    /**
+     * Read the car-GPS-forwarding preference synchronously (same pattern as
+     * clusterNavigation). When false, the car's LOCATION sensor is not
+     * advertised in the SDR and no fixes are sent, so AA uses the phone's GPS.
+     */
+    private fun gpsForwardingEnabled(): Boolean {
+        val ctx = context ?: return AppPreferences.DEFAULT_GPS_FORWARDING
+        return try {
+            kotlinx.coroutines.runBlocking {
+                AppPreferences.getInstance(ctx).gpsForwarding.first()
+            }
+        } catch (e: Exception) {
+            OalLog.w(TAG, "Failed to read gpsForwarding pref: ${e.message}")
+            AppPreferences.DEFAULT_GPS_FORWARDING
+        }
+    }
+
     @android.annotation.SuppressLint("MissingPermission")
     private fun startLocationForwarding(session: AasdkSession) {
         stopDirectLocationForwarding()
+        if (!gpsForwardingEnabled()) {
+            OalLog.i(TAG, "Car GPS forwarding off — not sending car location (AA uses phone GPS)")
+            return
+        }
         val ctx = context ?: return
         val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager ?: return
         if (!lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER)) {
