@@ -59,8 +59,21 @@ class AaProxy(
     private val activeBridges = AtomicInteger(0)
     private var bridgeUsed = false
 
-    /** Returns true if at least one AA bridge is active (AA connected and streaming). */
-    fun hasActiveBridge(): Boolean = activeBridges.get() > 0
+    /**
+     * Bridges actually PUMPING (car socket acquired, both pipes wired). Distinct from
+     * [activeBridges], which is incremented the instant the bridge coroutine starts —
+     * including while parked in [awaitPendingCarSocket] waiting for the car. Reporting
+     * "active" during that wait made TcpAdvertiser.handleCarConnection() take the
+     * destructive branch (stop() + re-listen on a NEW port), tearing the socket out
+     * from under the AA reader already attached (upstream #60).
+     */
+    private val pumpingBridges = AtomicInteger(0)
+
+    /** True only when a bridge is genuinely relaying bytes. */
+    fun hasActiveBridge(): Boolean = pumpingBridges.get() > 0
+
+    /** True if a bridge coroutine exists at all, including one awaiting a car socket. */
+    fun hasPendingBridge(): Boolean = activeBridges.get() > 0
 
     @Volatile private var pendingCarSocket: Socket? = null
 
@@ -71,7 +84,7 @@ class AaProxy(
      * owns its socket until it completes.
      */
     fun updateCarSocket(newCarSocket: Socket) {
-        if (activeBridges.get() > 0) return  // active bridge owns its socket
+        if (pumpingBridges.get() > 0) return  // live bridge owns its socket (upstream #60)
         pendingCarSocket = newCarSocket
         CompanionLog.d(TAG, "Car socket updated (pending AA connect)")
     }
@@ -115,6 +128,7 @@ class AaProxy(
     private fun launchBridge(aaSocket: Socket) {
         scope.launch {
             var carSocket: Socket? = null
+            var counted = false
             try {
                 activeBridges.incrementAndGet()
                 listener?.onConnected()
@@ -133,6 +147,9 @@ class AaProxy(
                         "No car socket within ${PREWARM_CAR_WAIT_MS}ms — AA connected but no car ready"
                     )
                 activeCarSocket = carSocket
+                // Only NOW is the bridge genuinely pumping — see pumpingBridges.
+                pumpingBridges.incrementAndGet()
+                counted = true
 
                 CompanionLog.i(TAG, "Bridge established: AA <-> Car")
 
@@ -160,11 +177,22 @@ class AaProxy(
                 val unexpected = isRunning
                 CompanionLog.i(TAG, "Bridge closed (unexpected=$unexpected)")
                 activeCarSocket = null
+                if (counted) pumpingBridges.decrementAndGet()
                 runCatching { aaSocket.close() }
-                // carSocket is owned by TcpAdvertiser, which closes it on an
-                // unexpected break so the car gets a clean reset instead of a
-                // half-open socket. (An earlier comment here promised a
-                // TcpAdvertiser cleanup() that never existed.)
+                // TcpAdvertiser closes the car socket on an unexpected break so the
+                // car gets a clean reset. But if THIS bridge never actually pumped —
+                // AA attached, took the car socket out of pendingCarSocket
+                // destructively, then went away before the bridge wired up — the
+                // socket must go BACK into the pool, or every later AA attach finds
+                // none, parks for PREWARM_CAR_WAIT_MS, and dies "No car socket"
+                // forever (the livelock upstream #60 fixes). Only recycle a still-live
+                // socket, and only when no other bridge is pumping (which would own it).
+                if (isRunning && pumpingBridges.get() == 0) {
+                    carSocket?.takeIf { !it.isClosed && it.isConnected }?.let {
+                        pendingCarSocket = it
+                        CompanionLog.i(TAG, "Car socket still live — returned to pool for next AA attach")
+                    }
+                }
                 if (activeBridges.decrementAndGet() <= 0) {
                     listener?.onDisconnected(unexpected)
                 }
