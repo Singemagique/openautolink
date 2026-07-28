@@ -36,9 +36,16 @@ class MediaCodecDecoder(
         private const val INPUT_TIMEOUT_BEHIND_US = 5000L // 5ms — shorter when catching up
         private const val OUTPUT_TIMEOUT_US = 1000L // 1ms timeout for output drain
         private const val STATS_INTERVAL_MS = 500L
-        // Minimum IDR size to be considered a real picture (not encoder startup seed).
-        // Real IDRs at any supported resolution are 50KB+. Seed IDRs are ~900 bytes.
-        private const val MIN_REAL_IDR_BYTES = 4096
+        // Minimum IDR size to be considered a real picture (not encoder startup seed
+        // and not gearhead's startup splash). Upstream #63: this was 4096 with a stale
+        // "seed IDRs are ~900 bytes" comment, but gearhead sends an ~8176-byte
+        // black/green startup-splash keyframe at session start (> 4096), so the splash
+        // took the REAL-IDR branch — we unblanked on a non-picture, then rendered
+        // P-frames anchored to it. On WIRELESS the next real IDR is 60s away
+        // (gearhead hard-codes key_frame_interval_wireless=60), which is the exact
+        // "green for the first 60 seconds" (#18). Real content IDRs are 100-210KB;
+        // 50000 sits above the 8176B splash and below the smallest real IDR.
+        private const val MIN_REAL_IDR_BYTES = 50_000
         // After accepting a seed IDR, silently decode P-frames for this long before
         // rendering. Gives the decoder time to accumulate picture content from P-frames
         // so the first visible frame is mostly complete rather than green.
