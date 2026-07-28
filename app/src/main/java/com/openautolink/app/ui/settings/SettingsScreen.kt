@@ -768,6 +768,36 @@ private fun DisplayTab(
             )
         }
 
+        // Always in Park
+        Row(
+            modifier = Modifier
+                .fillMaxWidth(0.7f)
+                .padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Always in Park",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "Always tell the phone the car is parked, so Android Auto " +
+                        "keeps the on-screen keyboard and other features unlocked. " +
+                        "Off by default, which reports the car's real gear. " +
+                        "Only enable it if you are not the one driving — it disables " +
+                        "Android Auto's driving safety restrictions.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = uiState.alwaysInPark,
+                onCheckedChange = { viewModel.updateAlwaysInPark(it) },
+                modifier = Modifier.testTag("alwaysInParkToggle"),
+            )
+        }
+
         // Cluster Navigation
         Row(
             modifier = Modifier

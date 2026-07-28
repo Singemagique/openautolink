@@ -305,6 +305,15 @@ public:
     void reportChannelError(const char* channelName, const aasdk::error::Error& e);
 
     /**
+     * Notify Kotlin that the phone subscribed to a sensor type, so the VHAL
+     * layer can push current state immediately. Gearhead treats a missing
+     * SENSOR_DRIVING_STATUS_DATA sample as FULLY_RESTRICTED(31) rather than
+     * unknown, so waiting for a VHAL change event leaves a parked car with no
+     * keyboard/voice input forever. See issue #61.
+     */
+    void notifySensorSubscribed(int sensorType);
+
+    /**
      * Force-stop the session asynchronously without joining ioThread (safe
      * to call from io thread). Notifies Kotlin via onSessionStopped, which
      * triggers the auto-reconnect path. Idempotent.
@@ -375,6 +384,7 @@ private:
         jmethodID onVoiceSession = nullptr;
         jmethodID onAudioFocusRequest = nullptr;
         jmethodID onError = nullptr;
+        jmethodID onSensorSubscribed = nullptr;
     };
     CallbackMethods cbMethods_;
 };

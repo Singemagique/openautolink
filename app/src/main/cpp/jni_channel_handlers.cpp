@@ -257,6 +257,13 @@ void JniSensorHandler::onSensorStartRequest(
     promise->then([]() {}, [this](const auto& e) { this->onChannelError(e); });
     channel_->sendSensorStartResponse(response, std::move(promise));
 
+    // Push current vehicle state for this sensor immediately. Gearhead defaults
+    // its driving-status restriction to FULLY_RESTRICTED(31) and only leaves
+    // that state once a real sample arrives (teardown: p000/rqd.java f65655d).
+    // A parked car generates no VHAL change events, so without this the phone
+    // stays restricted for the whole session — no Maps keyboard. Issue #61.
+    session_.notifySensorSubscribed(static_cast<int>(request.type()));
+
     channel_->receive(shared_from_this());
 }
 

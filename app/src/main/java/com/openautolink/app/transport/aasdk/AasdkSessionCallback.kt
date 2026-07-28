@@ -109,4 +109,19 @@ interface AasdkSessionCallback {
 
     /** Error from the native session. */
     fun onError(message: String)
+
+    /**
+     * The phone subscribed to a sensor type (SensorStartRequest). The current
+     * value for that sensor must be pushed immediately.
+     *
+     * Gearhead defaults its driving-status restriction to FULLY_RESTRICTED(31)
+     * and only leaves that state once a real SENSOR_DRIVING_STATUS_DATA sample
+     * arrives — a missing sample is treated as "restricted", not "unknown". A
+     * parked car produces no VHAL change events, so a purely change-driven
+     * sensor pipeline never answers and the phone blocks keyboard/voice input
+     * for the whole session. See issue #61.
+     *
+     * @param sensorType aasdk SensorType ordinal (13 = DRIVING_STATUS)
+     */
+    fun onSensorSubscribed(sensorType: Int)
 }

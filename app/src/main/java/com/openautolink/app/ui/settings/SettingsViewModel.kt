@@ -39,6 +39,7 @@ data class SettingsUiState(
     // App-side
     val driveSide: String = AppPreferences.DEFAULT_DRIVE_SIDE,
     val gpsForwarding: Boolean = AppPreferences.DEFAULT_GPS_FORWARDING,
+    val alwaysInPark: Boolean = AppPreferences.DEFAULT_ALWAYS_IN_PARK,
     val clusterNavigation: Boolean = AppPreferences.DEFAULT_CLUSTER_NAVIGATION,
     val overlayStatsButton: Boolean = AppPreferences.DEFAULT_OVERLAY_STATS_BUTTON,
     val fileLoggingEnabled: Boolean = AppPreferences.DEFAULT_FILE_LOGGING_ENABLED,
@@ -129,6 +130,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         preferences.logUploadToken,
         preferences.logUploadDeviceLabel,
         preferences.logPersistEnabled,
+        preferences.alwaysInPark,
     ) { values: Array<Any> ->
         SettingsUiState(
             videoAutoNegotiate = values[0] as Boolean,
@@ -177,6 +179,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             logUploadToken = values[43] as String,
             logUploadDeviceLabel = values[44] as String,
             logPersistEnabled = values[45] as Boolean,
+            alwaysInPark = values[46] as Boolean,
         )
     }.stateIn(
         viewModelScope,
@@ -379,6 +382,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun updateGpsForwarding(enabled: Boolean) {
         viewModelScope.launch { preferences.setGpsForwarding(enabled) }
+    }
+
+    fun updateAlwaysInPark(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAlwaysInPark(enabled) }
     }
 
     fun updateClusterNavigation(enabled: Boolean) {

@@ -67,6 +67,14 @@ class SessionManager(
     companion object {
         private const val TAG = "SessionManager"
 
+        // aasdk SensorType ordinals (app/src/main/proto/oal/sensors.proto).
+        // Used to answer the phone's SensorStartRequest with current state.
+        private const val SENSOR_TYPE_SPEED = 3
+        private const val SENSOR_TYPE_PARKING_BRAKE = 7
+        private const val SENSOR_TYPE_GEAR = 8
+        private const val SENSOR_TYPE_NIGHT_MODE = 10
+        private const val SENSOR_TYPE_DRIVING_STATUS = 13
+
         /**
          * Video-stall watchdog (issue #34). If no inbound AA video frame arrives
          * for this long while we're STREAMING and foreground, the AA video
@@ -383,6 +391,12 @@ class SessionManager(
     @Volatile private var lastSentNightMode: Boolean? = null
     @Volatile private var lastSentParkingBrake: Boolean? = null
     @Volatile private var lastSentDriving: Boolean? = null
+    /**
+     * When true, the phone is always told the car is parked, regardless of the
+     * real VHAL gear. Off by default (real state is forwarded). Issue #61.
+     */
+    @Volatile private var alwaysInPark: Boolean = AppPreferences.DEFAULT_ALWAYS_IN_PARK
+    @Volatile private var alwaysInParkObserverStarted = false
     @Volatile private var lastSentGearRaw: Int? = null
 
     // Cluster manager
@@ -458,6 +472,73 @@ class SessionManager(
         lastSentDriving = null
         lastSentGearRaw = null
         OalLog.d(TAG, "Reset latched vehicle sensor state: $reason")
+    }
+
+    /**
+     * Observe the "always in park" override. Started from [start] so it is live
+     * for the whole session; toggling mid-session re-pushes driving status so
+     * the phone reacts without a reconnect. Issue #61.
+     */
+    private fun observeAlwaysInPark() {
+        if (alwaysInParkObserverStarted) return
+        val ctx = context ?: return
+        alwaysInParkObserverStarted = true
+        val prefs = AppPreferences.getInstance(ctx)
+        scope.launch {
+            prefs.alwaysInPark.collect { enabled ->
+                val changed = alwaysInPark != enabled
+                alwaysInPark = enabled
+                if (changed) {
+                    val real = _vehicleDataForwarder?.latestVehicleData?.value?.driving ?: false
+                    val driving = if (enabled) false else real
+                    lastSentDriving = driving
+                    aasdkSession?.sendDrivingStatus(driving)
+                    DiagnosticLog.i("vhal", "alwaysInPark=$enabled — re-pushed driving=$driving (real=$real)")
+                }
+            }
+        }
+    }
+
+    /**
+     * The phone subscribed to a sensor type. Push current vehicle state now.
+     *
+     * Gearhead defaults driving status to FULLY_RESTRICTED(31) and only leaves
+     * that state on a real sample; a parked car emits no VHAL change events, so
+     * a change-driven pipeline never answers and Maps blocks the keyboard for
+     * the whole session. The latches are cleared first because the initial
+     * VHAL burst fires ~130ms BEFORE the sensor channel opens — those sends are
+     * dropped by the native `!streaming_ || !sensorChannel_` guard, yet still
+     * recorded as sent, which would otherwise suppress this re-push. Issue #61.
+     */
+    private fun onPhoneSubscribedSensor(sensorType: Int) {
+        val session = aasdkSession ?: return
+        val vd = _vehicleDataForwarder?.latestVehicleData?.value
+        resetLatchedVehicleSensorState("sensor_subscribe_$sensorType")
+        when (sensorType) {
+            SENSOR_TYPE_DRIVING_STATUS -> {
+                // Default to "parked" when VHAL has not reported a gear yet.
+                // Being wrong here is strictly safer than silence: silence is
+                // read by the phone as fully restricted, and a real gear change
+                // corrects it within one VHAL event.
+                val driving = if (alwaysInPark) false else (vd?.driving ?: false)
+                lastSentDriving = driving
+                session.sendDrivingStatus(driving)
+                DiagnosticLog.i("vhal", "pushed driving=$driving on subscribe (gear=${vd?.gearRaw})")
+            }
+            SENSOR_TYPE_GEAR -> vd?.gearRaw?.let {
+                lastSentGearRaw = it; session.sendGear(it)
+            }
+            SENSOR_TYPE_PARKING_BRAKE -> vd?.parkingBrake?.let {
+                lastSentParkingBrake = it; session.sendParkingBrake(it)
+            }
+            SENSOR_TYPE_NIGHT_MODE -> {
+                val night = vd?.nightMode ?: lastKnownUiNightMode ?: currentUiNightMode()
+                night?.let { lastSentNightMode = it; session.sendNightMode(it) }
+            }
+            SENSOR_TYPE_SPEED -> vd?.speedKmh?.let {
+                session.sendSpeed((it / 3.6f * 1000).toInt())
+            }
+        }
     }
 
     private fun seedCurrentUiNightMode(reason: String) {
@@ -558,6 +639,7 @@ class SessionManager(
         // unconditionally publishes nightMode / parking / driving / gear to
         // the phone — the phone has no prior state from us.
         resetLatchedVehicleSensorState("start_session")
+        observeAlwaysInPark()
         _vehicleDataForwarder = context?.let { ctx ->
             VehicleDataForwarderImpl(
                 ctx,
@@ -580,7 +662,8 @@ class SessionManager(
                         if (lastSentNightMode != it) { lastSentNightMode = it; session.sendNightMode(it) }
                     }
                     vd.driving?.let {
-                        if (lastSentDriving != it) { lastSentDriving = it; session.sendDrivingStatus(it) }
+                        val drv = if (alwaysInPark) false else it
+                        if (lastSentDriving != drv) { lastSentDriving = drv; session.sendDrivingStatus(drv) }
                     }
                     if (vd.fuelLevelPct != null || vd.rangeKm != null) {
                         session.sendFuel(
@@ -1002,6 +1085,10 @@ class SessionManager(
         _effectiveDpi.value = effectiveDpi
 
         aasdkSession = session
+        // Answer the phone's SensorStartRequest with current vehicle state.
+        // Without this, a parked car never sends driving status and the phone
+        // stays FULLY_RESTRICTED (no Maps keyboard). Issue #61.
+        session.onSensorSubscribedListener = { type -> onPhoneSubscribedSensor(type) }
         // Reset the mirrored reconnect counter at session boundary. The
         // per-session collector below will republish updates as they fire.
         _reconnectAttempt.value = 0
@@ -1739,7 +1826,8 @@ class SessionManager(
                     if (lastSentNightMode != it) { lastSentNightMode = it; session.sendNightMode(it) }
                 }
                 message.driving?.let {
-                    if (lastSentDriving != it) { lastSentDriving = it; session.sendDrivingStatus(it) }
+                    val drv = if (alwaysInPark) false else it
+                    if (lastSentDriving != drv) { lastSentDriving = drv; session.sendDrivingStatus(drv) }
                 }
             }
             is ControlMessage.Gnss -> {

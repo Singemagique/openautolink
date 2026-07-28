@@ -175,6 +175,18 @@ void JniSession::callVoidCallback(jmethodID method)
     releaseEnv(attached);
 }
 
+void JniSession::notifySensorSubscribed(int sensorType)
+{
+    if (!cbMethods_.onSensorSubscribed || !callbackRef_) return;
+    bool attached;
+    JNIEnv* env = getEnv(attached);
+    if (env) {
+        env->CallVoidMethod(callbackRef_, cbMethods_.onSensorSubscribed,
+                            static_cast<jint>(sensorType));
+    }
+    releaseEnv(attached);
+}
+
 // ============================================================================
 // start() Ã¢â‚¬â€ build the aasdk pipeline
 // ============================================================================
@@ -215,6 +227,7 @@ void JniSession::start(JNIEnv* env, jobject transportPipe, jobject callback, job
     cbMethods_.onVoiceSession = env->GetMethodID(cbClass, "onVoiceSession", "(Z)V");
     cbMethods_.onAudioFocusRequest = env->GetMethodID(cbClass, "onAudioFocusRequest", "(I)V");
     cbMethods_.onError = env->GetMethodID(cbClass, "onError", "(Ljava/lang/String;)V");
+    cbMethods_.onSensorSubscribed = env->GetMethodID(cbClass, "onSensorSubscribed", "(I)V");
     env->DeleteLocalRef(cbClass);
 
     // Read SDR config from Kotlin
