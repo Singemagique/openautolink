@@ -61,6 +61,18 @@ class AasdkSession(
          *  re-provoked the rejection, sustaining the storm (issue #30). */
         private const val PROTOCOL_ERROR_BASE_MS = 8_000L
 
+        /** First-retry delay after a session that had been HEALTHY (up past
+         *  [STABLE_DWELL_MS]) dies. The 8s [PROTOCOL_ERROR_BASE_MS] floor exists for
+         *  rapid Error-30 *flaps* at connect time, where a fast re-dial beat the
+         *  phone's own teardown and re-provoked the rejection. It is wrong for a
+         *  long-lived session: field logs (2026-07-29) show a metronomic ~9-minute
+         *  break where gearhead closes its localhost socket, and it accepts a fresh
+         *  proxy connection ~200ms later — yet the car sat out the full 8s, which WAS
+         *  the entire user-visible outage. Retry fast instead; if the fast retry does
+         *  flap, dwell < STABLE_DWELL_MS on the next death and the backoff escalates
+         *  as before. */
+        private const val HEALTHY_SESSION_RETRY_MS = 1_500L
+
         /** Process-wide native onError coalescer.
          *
          *  Lives in the companion object (not on instances) so it survives
@@ -459,7 +471,8 @@ class AasdkSession(
                 android.os.SystemClock.elapsedRealtime() - sessionStartedAtMs
             else
                 Long.MAX_VALUE
-            if (dwellMs >= STABLE_DWELL_MS) {
+            val wasHealthySession = dwellMs >= STABLE_DWELL_MS
+            if (wasHealthySession) {
                 consecutiveReconnectFailures = 0
             }
             sessionStartedAtMs = 0L
@@ -467,15 +480,23 @@ class AasdkSession(
             consecutiveReconnectFailures++
             _reconnectAttempt.value = consecutiveReconnectFailures
 
-            // Exponential backoff: 3s base, longer if protocol error (phone
-            // needs time to tear down old SSL session). Cap at 30s. Error 30
-            // (stale SSL session) gets a higher floor — a 5s re-dial often
-            // beat the phone's own teardown and re-provoked the rejection.
-            val baseDelayMs = if (lastFailureWasProtocolError) PROTOCOL_ERROR_BASE_MS else 3000L
-            val backoffMs = (baseDelayMs * (1L shl (consecutiveReconnectFailures - 1).coerceAtMost(3)))
-                .coerceAtMost(30_000L)
-            OalLog.i(TAG, "Session died unexpectedly — retry #$consecutiveReconnectFailures in ${backoffMs}ms" +
-                if (lastFailureWasProtocolError) " (protocol error, extended backoff)" else "")
+            // A session that stayed up past STABLE_DWELL_MS then died is a FRESH
+            // failure, not a handshake flap — the phone has already torn its side
+            // down, so re-dial promptly (see HEALTHY_SESSION_RETRY_MS). Only genuine
+            // flaps take the exponential path: 3s base, or the 8s protocol floor for
+            // Error 30 (stale SSL session, where a fast re-dial re-provokes the
+            // rejection), doubling to a 30s cap.
+            val backoffMs = if (wasHealthySession) {
+                HEALTHY_SESSION_RETRY_MS
+            } else {
+                val baseDelayMs = if (lastFailureWasProtocolError) PROTOCOL_ERROR_BASE_MS else 3000L
+                (baseDelayMs * (1L shl (consecutiveReconnectFailures - 1).coerceAtMost(3)))
+                    .coerceAtMost(30_000L)
+            }
+            OalLog.i(TAG, "Session died unexpectedly after ${dwellMs / 1000}s — " +
+                "retry #$consecutiveReconnectFailures in ${backoffMs}ms" +
+                if (wasHealthySession) " (healthy session, fast retry)"
+                else if (lastFailureWasProtocolError) " (protocol error, extended backoff)" else "")
             lastFailureWasProtocolError = false
 
             kotlinx.coroutines.delay(backoffMs)
